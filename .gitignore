@@ -1,0 +1,26 @@
+# 虚拟环境（服务器上 pip install -r requirements.txt 重建）
+.venv/
+venv/
+env/
+
+# 本地配置（含敏感信息，勿提交）
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Node（若项目有）
+node_modules/
+
+# 系统/编辑器
+.DS_Store
+*.swp
+*.swo
+.idea/
+.vscode/
