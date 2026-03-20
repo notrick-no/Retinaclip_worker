@@ -1,0 +1,74 @@
+# ========== RabbitMQ（可选，默认值也有） ==========
+# 格式: amqp://用户名:密码@主机:端口
+RABBITMQ_URL=amqp://user:password@47.101.157.157:19168
+RABBITMQ_QUEUE=media.uploaded
+
+# ========== 阿里云 ECS（必填） ==========
+ALIBABA_CLOUD_ACCESS_KEY_ID=xxx
+ALIBABA_CLOUD_ACCESS_KEY_SECRET=xxx
+ALIYUN_ECS_REGION=cn-shanghai
+
+# 预装算法环境的自定义镜像 ID（ECS ImageId）
+ALIYUN_ECS_IMAGE_ID=xxx
+
+# 安全组/交换机（必填）
+ALIYUN_ECS_SECURITY_GROUP_ID=sg-xxx
+ALIYUN_ECS_VSWITCH_ID=vsw-xxx
+
+# 可选：可用区 ID（留空不填也可以）
+# ALIYUN_ECS_ZONE_ID=cn-shanghai-b
+
+# ECS 实例规格/命名（可选）
+ALIYUN_ECS_INSTANCE_TYPE=ecs.gn5i-c2g1.large
+ALIYUN_ECS_INSTANCE_NAME_PREFIX=mingle-worker
+
+# 运行镜像（可选；不填会用 mingle-processor:latest）
+WORKER_PROCESSING_IMAGE=mingle-processor:latest
+
+# ========== 计费/并发策略（可选） ==========
+WORKER_MAX_INSTANCES=5
+WORKER_PREFETCH_COUNT=2
+
+# 用抢占式（Spot）
+ALIYUN_ECS_USE_SPOT=true
+ALIYUN_ECS_SPOT_STRATEGY=SpotAsPriceGo
+# 仅 SpotWithPriceLimit 才需要
+# ALIYUN_ECS_SPOT_PRICE_LIMIT=0.5
+
+# 带宽（可选）
+ALIYUN_ECS_BANDWIDTH_OUT=100
+
+# 系统盘（可选）
+ALIYUN_ECS_SYSTEM_DISK_SIZE=40
+ALIYUN_ECS_SYSTEM_DISK_CATEGORY=cloud_essd
+
+# 任务/轮询超时（可选）
+WORKER_TASK_TIMEOUT=1800000
+WORKER_INSTANCE_START_TIMEOUT=300000
+WORKER_POLL_INTERVAL=10000
+
+# ========== Webhook（必填） ==========
+WEBHOOK_SECRET=xxx
+
+# webhook 发送参数（可选）
+WORKER_WEBHOOK_TIMEOUT=10000
+WORKER_WEBHOOK_MAX_RETRIES=3
+WORKER_WEBHOOK_RETRY_INTERVAL=1000
+
+# ========== 重试与健康检查（可选） ==========
+WORKER_RETRY_MAX_ATTEMPTS=3
+WORKER_RETRY_BASE_INTERVAL=5000
+WORKER_RETRY_MAX_INTERVAL=60000
+
+WORKER_HEALTH_CHECK_INTERVAL=30000
+WORKER_ZOMBIE_CHECK_INTERVAL=60000
+
+# ========== 日志级别（可选） ==========
+WORKER_LOG_LEVEL=info
+
+# ========== 可选：Mock 处理（仅测试用） ==========
+# WORKER_MOCK_PROCESSING=true
+# WORKER_MOCK_DELAY_SECONDS=60
+
+# ========== 优雅关闭（可选） ==========
+WORKER_SHUTDOWN_GRACE_MS=60000

@@ -10,46 +10,9 @@
 import * as crypto from 'crypto'
 import { WorkerConfig } from './config'
 import { createLogger } from './logger'
+import { progressStageToEventType, type WebhookPayload } from './domain/webhook-contract'
 
 const log = createLogger('Webhook')
-
-/**
- * Webhook 事件类型
- */
-export type WebhookEventType =
-  | 'queue_position_update'
-  | 'download_started'
-  | 'download_progress'
-  | 'processing_started'
-  | 'processing_progress'
-  | 'upload_started'
-  | 'upload_progress'
-  | 'completed'
-  | 'failed'
-  | 'retrying'
-
-/**
- * Webhook Payload
- */
-export interface WebhookPayload {
-  job_id: string
-  user_id?: string
-  status: string
-  event_type: WebhookEventType
-  // 进度信息
-  current_stage?: string
-  progress_percentage?: number
-  progress_message?: string
-  estimated_time_remaining?: number
-  queue_position?: number
-  // 完成信息
-  output_video_url?: string
-  completed_at?: string
-  processing_time_seconds?: number
-  // 错误信息
-  error_message?: string
-  retry_count?: number
-}
 
 /**
  * 生成 Webhook 签名
@@ -94,7 +57,7 @@ export async function sendWebhook(
       if (response.ok) {
         log.debug('Webhook 发送成功', {
           url: webhookUrl,
-          event: payload.event_type,
+          eventType: payload.event_type,
           jobId: payload.job_id,
         })
         return true
@@ -103,11 +66,13 @@ export async function sendWebhook(
       log.warn(`Webhook 返回非 200 状态码: ${response.status}`, {
         attempt: attempt + 1,
         jobId: payload.job_id,
+        eventType: payload.event_type,
       })
     } catch (error) {
       log.warn(`Webhook 发送失败 (第 ${attempt + 1} 次)`, {
         jobId: payload.job_id,
         error: error instanceof Error ? error.message : String(error),
+        eventType: payload.event_type,
       })
     }
 
@@ -163,17 +128,11 @@ export function buildProgressPayload(
   estimatedTime?: number,
   userId?: string,
 ): WebhookPayload {
-  const eventMap = {
-    downloading: 'download_progress' as const,
-    processing: 'processing_progress' as const,
-    uploading: 'upload_progress' as const,
-  }
-
   return {
     job_id: jobId,
     user_id: userId,
     status: stage === 'downloading' ? 'DOWNLOADING' : stage === 'uploading' ? 'UPLOADING' : 'PROCESSING',
-    event_type: eventMap[stage],
+    event_type: progressStageToEventType[stage],
     current_stage: stage,
     progress_percentage: percentage,
     progress_message: message,

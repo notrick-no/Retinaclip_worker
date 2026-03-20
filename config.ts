@@ -117,77 +117,100 @@ export interface WorkerConfig {
  * 从环境变量加载配置，带默认值
  */
 export function loadConfig(): WorkerConfig {
-  // 校验必填项
-  const accessKeyId = env('ALIBABA_CLOUD_ACCESS_KEY_ID', '')
-  const accessKeySecret = env('ALIBABA_CLOUD_ACCESS_KEY_SECRET', '')
-  if (!accessKeyId || !accessKeySecret) {
-    throw new Error('缺少阿里云 AccessKey 配置：ALIBABA_CLOUD_ACCESS_KEY_ID / ALIBABA_CLOUD_ACCESS_KEY_SECRET')
-  }
+  // ===== 必填项（启动期直接校验）=====
+  const accessKeyId = requireEnv('ALIBABA_CLOUD_ACCESS_KEY_ID')
+  const accessKeySecret = requireEnv('ALIBABA_CLOUD_ACCESS_KEY_SECRET')
+  const imageId = requireEnv('ALIYUN_ECS_IMAGE_ID')
+  const securityGroupId = requireEnv('ALIYUN_ECS_SECURITY_GROUP_ID')
+  const vswitchId = requireEnv('ALIYUN_ECS_VSWITCH_ID')
+  const webhookSecret = requireEnv('WEBHOOK_SECRET')
 
-  const imageId = env('ALIYUN_ECS_IMAGE_ID', '')
-  if (!imageId) {
-    throw new Error('缺少 ECS 镜像 ID 配置：ALIYUN_ECS_IMAGE_ID')
-  }
+  // ===== 解析/校验工具函数 =====
+  const prefetchCount = parseIntEnv('WORKER_PREFETCH_COUNT', 2, { min: 1 })
+  const reconnectInterval = parseIntEnv('WORKER_RECONNECT_INTERVAL', 5000, { min: 1 })
+  const maxReconnectAttempts = parseIntEnv('WORKER_MAX_RECONNECT_ATTEMPTS', 0, { min: 0 })
+
+  const instanceType = env('ALIYUN_ECS_INSTANCE_TYPE', 'ecs.gn5i-c2g1.large')
+  const regionId = env('ALIYUN_ECS_REGION', 'cn-shanghai')
+  const instanceNamePrefix = env('ALIYUN_ECS_INSTANCE_NAME_PREFIX', 'mingle-worker')
+
+  const maxInstances = parseIntEnv('WORKER_MAX_INSTANCES', 5, { min: 1 })
+  const systemDiskSize = parseIntEnv('ALIYUN_ECS_SYSTEM_DISK_SIZE', 40, { min: 1 })
+  const systemDiskCategory = env('ALIYUN_ECS_SYSTEM_DISK_CATEGORY', 'cloud_essd')
+
+  const useSpotInstance = parseBoolEnv('ALIYUN_ECS_USE_SPOT', true)
+  const spotStrategy = parseEnumEnv<'SpotAsPriceGo' | 'SpotWithPriceLimit'>('ALIYUN_ECS_SPOT_STRATEGY', {
+    defaultValue: 'SpotAsPriceGo',
+    allowed: ['SpotAsPriceGo', 'SpotWithPriceLimit'],
+  })
+  const spotPriceLimitRaw = process.env['ALIYUN_ECS_SPOT_PRICE_LIMIT']
+  const spotPriceLimit =
+    spotStrategy === 'SpotWithPriceLimit' && spotPriceLimitRaw && spotPriceLimitRaw.trim() !== ''
+      ? parseFloatEnv('ALIYUN_ECS_SPOT_PRICE_LIMIT', { min: 0 })
+      : undefined
 
   return {
     rabbitmq: {
       url: env('RABBITMQ_URL', 'amqp://localhost:5672'),
       queue: env('RABBITMQ_QUEUE', 'media.uploaded'),
-      prefetchCount: envInt('WORKER_PREFETCH_COUNT', 2),
-      reconnectInterval: envInt('WORKER_RECONNECT_INTERVAL', 5000),
-      maxReconnectAttempts: envInt('WORKER_MAX_RECONNECT_ATTEMPTS', 0),
+      prefetchCount,
+      reconnectInterval,
+      maxReconnectAttempts,
     },
 
     ecs: {
       accessKeyId,
       accessKeySecret,
-      regionId: env('ALIYUN_ECS_REGION', 'cn-shanghai'),
+      regionId,
       imageId,
-      instanceType: env('ALIYUN_ECS_INSTANCE_TYPE', 'ecs.gn5i-c2g1.large'),
-      securityGroupId: env('ALIYUN_ECS_SECURITY_GROUP_ID', ''),
-      vswitchId: env('ALIYUN_ECS_VSWITCH_ID', ''),
+      instanceType,
+      securityGroupId,
+      vswitchId,
       zoneId: env('ALIYUN_ECS_ZONE_ID', '') || undefined,
-      instanceNamePrefix: env('ALIYUN_ECS_INSTANCE_NAME_PREFIX', 'mingle-worker'),
-      maxInstances: envInt('WORKER_MAX_INSTANCES', 5),
-      systemDiskSize: envInt('ALIYUN_ECS_SYSTEM_DISK_SIZE', 40),
-      systemDiskCategory: env('ALIYUN_ECS_SYSTEM_DISK_CATEGORY', 'cloud_essd'),
-      useSpotInstance: envBool('ALIYUN_ECS_USE_SPOT', true),
-      spotStrategy: env('ALIYUN_ECS_SPOT_STRATEGY', 'SpotAsPriceGo') as 'SpotAsPriceGo' | 'SpotWithPriceLimit',
-      spotPriceLimit: envFloat('ALIYUN_ECS_SPOT_PRICE_LIMIT', 0) || undefined,
-      internetMaxBandwidthOut: envInt('ALIYUN_ECS_BANDWIDTH_OUT', 100),
-      taskTimeout: envInt('WORKER_TASK_TIMEOUT', 30 * 60 * 1000),   // 30 分钟
-      instanceStartTimeout: envInt('WORKER_INSTANCE_START_TIMEOUT', 5 * 60 * 1000), // 5 分钟
-      pollInterval: envInt('WORKER_POLL_INTERVAL', 10000),  // 10 秒
+      instanceNamePrefix,
+      maxInstances,
+      systemDiskSize,
+      systemDiskCategory,
+      useSpotInstance,
+      spotStrategy,
+      spotPriceLimit,
+      internetMaxBandwidthOut: parseIntEnv('ALIYUN_ECS_BANDWIDTH_OUT', 100, { min: 0 }),
+      taskTimeout: parseIntEnv('WORKER_TASK_TIMEOUT', 30 * 60 * 1000, { min: 1000 }), // 30 分钟
+      instanceStartTimeout: parseIntEnv('WORKER_INSTANCE_START_TIMEOUT', 5 * 60 * 1000, { min: 1000 }), // 5 分钟
+      pollInterval: parseIntEnv('WORKER_POLL_INTERVAL', 10000, { min: 1000 }), // 10 秒
       keyPairName: env('ALIYUN_ECS_KEY_PAIR_NAME', '') || undefined,
       ramRoleName: env('ALIYUN_ECS_RAM_ROLE_NAME', '') || undefined,
-      mockProcessing: envBool('WORKER_MOCK_PROCESSING', false),
-      mockDelaySeconds: envInt('WORKER_MOCK_DELAY_SECONDS', 60),
+      mockProcessing: parseBoolEnv('WORKER_MOCK_PROCESSING', false),
+      mockDelaySeconds: parseIntEnv('WORKER_MOCK_DELAY_SECONDS', 60, { min: 1 }),
     },
 
     webhook: {
-      secret: env('WEBHOOK_SECRET', 'your_webhook_secret_here_change_this_in_production'),
-      timeout: envInt('WORKER_WEBHOOK_TIMEOUT', 10000),
-      maxRetries: envInt('WORKER_WEBHOOK_MAX_RETRIES', 3),
-      retryBaseInterval: envInt('WORKER_WEBHOOK_RETRY_INTERVAL', 1000),
+      secret: webhookSecret,
+      timeout: parseIntEnv('WORKER_WEBHOOK_TIMEOUT', 10000, { min: 1 }),
+      maxRetries: parseIntEnv('WORKER_WEBHOOK_MAX_RETRIES', 3, { min: 0 }),
+      retryBaseInterval: parseIntEnv('WORKER_WEBHOOK_RETRY_INTERVAL', 1000, { min: 0 }),
     },
 
     retry: {
-      maxAttempts: envInt('WORKER_RETRY_MAX_ATTEMPTS', 3),
-      baseInterval: envInt('WORKER_RETRY_BASE_INTERVAL', 5000),
-      maxInterval: envInt('WORKER_RETRY_MAX_INTERVAL', 60000),
+      maxAttempts: parseIntEnv('WORKER_RETRY_MAX_ATTEMPTS', 3, { min: 0 }),
+      baseInterval: parseIntEnv('WORKER_RETRY_BASE_INTERVAL', 5000, { min: 0 }),
+      maxInterval: parseIntEnv('WORKER_RETRY_MAX_INTERVAL', 60000, { min: 0 }),
     },
 
     healthCheck: {
-      interval: envInt('WORKER_HEALTH_CHECK_INTERVAL', 30000),
-      zombieCheckInterval: envInt('WORKER_ZOMBIE_CHECK_INTERVAL', 60000),
+      interval: parseIntEnv('WORKER_HEALTH_CHECK_INTERVAL', 30000, { min: 1000 }),
+      zombieCheckInterval: parseIntEnv('WORKER_ZOMBIE_CHECK_INTERVAL', 60000, { min: 1000 }),
     },
 
     shutdown: {
-      graceMs: envInt('WORKER_SHUTDOWN_GRACE_MS', 60000), // 默认 1 分钟
+      graceMs: parseIntEnv('WORKER_SHUTDOWN_GRACE_MS', 60000, { min: 1000 }), // 默认 1 分钟
     },
 
     log: {
-      level: env('WORKER_LOG_LEVEL', 'info') as WorkerConfig['log']['level'],
+      level: parseEnumEnv<WorkerConfig['log']['level']>('WORKER_LOG_LEVEL', {
+        defaultValue: 'info',
+        allowed: ['debug', 'info', 'warn', 'error'],
+      }),
     },
   }
 }
@@ -198,22 +221,67 @@ function env(key: string, defaultValue: string): string {
   return process.env[key] ?? defaultValue
 }
 
-function envInt(key: string, defaultValue: number): number {
-  const value = process.env[key]
-  if (!value) return defaultValue
-  const parsed = parseInt(value, 10)
-  return isNaN(parsed) ? defaultValue : parsed
+function requireEnv(key: string): string {
+  const v = process.env[key]
+  if (!v || !v.trim()) {
+    throw new Error(`缺少必填配置：${key}`)
+  }
+  return v.trim()
 }
 
-function envFloat(key: string, defaultValue: number): number {
-  const value = process.env[key]
-  if (!value) return defaultValue
-  const parsed = parseFloat(value)
-  return isNaN(parsed) ? defaultValue : parsed
+function parseIntEnv(
+  key: string,
+  defaultValue: number,
+  opts?: { min?: number; max?: number },
+): number {
+  const raw = process.env[key]
+  if (raw === undefined || raw.trim() === '') return defaultValue
+
+  const parsed = Number.parseInt(raw, 10)
+  if (Number.isNaN(parsed)) {
+    throw new Error(`配置 ${key} 不是合法整数：${raw}`)
+  }
+  if (opts?.min !== undefined && parsed < opts.min) {
+    throw new Error(`配置 ${key} 不能小于 ${opts.min}：${parsed}`)
+  }
+  if (opts?.max !== undefined && parsed > opts.max) {
+    throw new Error(`配置 ${key} 不能大于 ${opts.max}：${parsed}`)
+  }
+  return parsed
 }
 
-function envBool(key: string, defaultValue: boolean): boolean {
-  const value = process.env[key]
-  if (!value) return defaultValue
-  return value.toLowerCase() === 'true' || value === '1'
+function parseFloatEnv(key: string, opts?: { min?: number; max?: number }): number {
+  const raw = process.env[key]
+  if (raw === undefined || raw.trim() === '') {
+    throw new Error(`缺少必填数值配置：${key}`)
+  }
+  const parsed = Number.parseFloat(raw)
+  if (Number.isNaN(parsed)) {
+    throw new Error(`配置 ${key} 不是合法浮点数：${raw}`)
+  }
+  if (opts?.min !== undefined && parsed < opts.min) {
+    throw new Error(`配置 ${key} 不能小于 ${opts.min}：${parsed}`)
+  }
+  if (opts?.max !== undefined && parsed > opts.max) {
+    throw new Error(`配置 ${key} 不能大于 ${opts.max}：${parsed}`)
+  }
+  return parsed
+}
+
+function parseBoolEnv(key: string, defaultValue: boolean): boolean {
+  const raw = process.env[key]
+  if (raw === undefined || raw.trim() === '') return defaultValue
+  const v = raw.trim().toLowerCase()
+  if (v === 'true' || v === '1' || v === 'yes') return true
+  if (v === 'false' || v === '0' || v === 'no') return false
+  throw new Error(`配置 ${key} 不是合法布尔值（true/false/1/0/yes/no）：${raw}`)
+}
+
+function parseEnumEnv<T extends string>(key: string, params: { defaultValue: T; allowed: T[] }): T {
+  const raw = process.env[key]
+  const v = raw === undefined || raw.trim() === '' ? params.defaultValue : (raw.trim() as T)
+  if (!params.allowed.includes(v)) {
+    throw new Error(`配置 ${key} 非法：${raw}，允许值=${params.allowed.join(',')}`)
+  }
+  return v
 }

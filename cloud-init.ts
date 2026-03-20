@@ -19,16 +19,7 @@
  */
 
 import { WorkerConfig } from './config'
-
-/** 传递给 ECS 实例的任务参数 */
-export interface TaskParams {
-  messageId: string
-  userId?: string
-  videoDownloadUrl: string
-  webhookUrl: string
-  detectType: string
-  targetRegions?: string   // JSON 字符串
-}
+import { TaskParams } from './domain/task'
 
 /**
  * 生成 cloud-init UserData 脚本

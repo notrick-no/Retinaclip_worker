@@ -18,7 +18,7 @@ import amqp from 'amqplib'
 import type { ConsumeMessage } from 'amqplib'
 import { WorkerConfig } from './config'
 import { ECSOrchestrator, TaskResult } from './ecs-orchestrator'
-import { TaskParams } from './cloud-init'
+import { TaskParams } from './domain/task'
 import {
   sendWebhook,
   buildProcessingStartedPayload,
@@ -45,6 +45,8 @@ interface TaskMessage {
     height: number
   }>
 }
+
+type TaskResultWithAttempt = TaskResult & { attempt: number }
 
 /**
  * RabbitMQ 消费者
@@ -214,6 +216,7 @@ export class QueueConsumer {
         log.info('任务处理成功', {
           messageId,
           instanceId: result.instanceId,
+          attempt: result.attempt,
           durationSeconds: result.durationSeconds.toFixed(2),
           outputUrl: result.outputVideoUrl,
         })
@@ -232,6 +235,7 @@ export class QueueConsumer {
         log.error('任务处理失败', undefined, {
           messageId,
           instanceId: result.instanceId,
+          attempt: result.attempt,
           error: result.error,
         })
       }
@@ -265,11 +269,16 @@ export class QueueConsumer {
   /**
    * 带重试的任务执行
    */
-  private async executeWithRetry(task: TaskMessage, messageId: string): Promise<TaskResult> {
+  private async executeWithRetry(
+    task: TaskMessage,
+    messageId: string,
+  ): Promise<TaskResultWithAttempt> {
     let lastResult: TaskResult | null = null
+    let lastAttempt = 0
     const processingImage = process.env.WORKER_PROCESSING_IMAGE || 'mingle-processor:latest'
 
     for (let attempt = 0; attempt <= this.config.retry.maxAttempts; attempt++) {
+      lastAttempt = attempt
       if (attempt > 0) {
         // 发送重试 webhook
         await sendWebhook(
@@ -283,7 +292,7 @@ export class QueueConsumer {
           this.config.retry.baseInterval * Math.pow(2, attempt - 1),
           this.config.retry.maxInterval
         )
-        log.info(`等待 ${delay}ms 后重试 (第 ${attempt} 次)`, { messageId })
+        log.info(`等待 ${delay}ms 后重试 (第 ${attempt} 次)`, { messageId, attempt })
         await new Promise(resolve => setTimeout(resolve, delay))
 
         await sendWebhook(
@@ -292,6 +301,12 @@ export class QueueConsumer {
           this.config
         )
       }
+
+      log.info('开始执行任务', {
+        messageId,
+        attempt,
+        detectType: task.detect_type || 'auto',
+      })
 
       // 构建任务参数
       const taskParams: TaskParams = {
@@ -304,10 +319,10 @@ export class QueueConsumer {
       }
 
       // 运行 ECS 实例
-      lastResult = await this.orchestrator.runTask(taskParams, processingImage)
+      lastResult = await this.orchestrator.runTask(taskParams, processingImage, attempt)
 
       if (lastResult.success) {
-        return lastResult
+        return { ...lastResult, attempt }
       }
 
       // 如果是抢占式回收导致的失败，直接重试
@@ -320,10 +335,14 @@ export class QueueConsumer {
         messageId,
         error: lastResult.error,
         instanceId: lastResult.instanceId,
+        attempt,
       })
     }
 
-    return lastResult!
+    if (!lastResult) {
+      throw new Error('executeWithRetry 返回 lastResult 为空')
+    }
+    return { ...lastResult, attempt: lastAttempt }
   }
 
   /**

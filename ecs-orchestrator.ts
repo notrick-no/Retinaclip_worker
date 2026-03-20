@@ -32,7 +32,8 @@ import ECS20140526, * as $ECS from '@alicloud/ecs20140526'
 import OpenApi, * as $OpenApi from '@alicloud/openapi-client'
 import * as $Util from '@alicloud/tea-util'
 import { WorkerConfig } from './config'
-import { generateUserData, TaskParams } from './cloud-init'
+import { generateUserData } from './cloud-init'
+import type { TaskParams } from './domain/task'
 import { createLogger } from './logger'
 
 const log = createLogger('ECS')
@@ -68,7 +69,9 @@ export interface TaskResult {
  * 阿里云 ECS 实例编排器
  */
 export class ECSOrchestrator {
-  private client: ECS20140526
+  // @alicloud/ecs20140526 在 ESM 下默认导入并不等价于构造函数本体，
+  // 实际构造函数在 default 属性上。
+  private client: any
   private config: WorkerConfig
   /** 当前运行中的实例 Map<instanceId, InstanceContext> */
   private runningInstances: Map<string, InstanceContext> = new Map()
@@ -88,7 +91,7 @@ export class ECSOrchestrator {
       endpoint: `ecs.${config.ecs.regionId}.aliyuncs.com`,
     })
 
-    this.client = new ECS20140526(openApiConfig)
+    this.client = new (ECS20140526 as any).default(openApiConfig)
   }
 
   /**
@@ -161,7 +164,11 @@ export class ECSOrchestrator {
    *   获取槽位 → 创建实例 → 等待启动 → 轮询任务状态
    *   → 收集结果 → 释放实例 → 释放槽位
    */
-  async runTask(taskParams: TaskParams, processingImage: string): Promise<TaskResult> {
+  async runTask(
+    taskParams: TaskParams,
+    processingImage: string,
+    attempt: number = 0,
+  ): Promise<TaskResult> {
     if (this.shuttingDown) {
       throw new Error('Worker 正在关闭，拒绝新任务')
     }
@@ -170,6 +177,7 @@ export class ECSOrchestrator {
     this.activeSlots++
     log.info(`获取实例槽位 [${this.activeSlots}/${this.config.ecs.maxInstances}]`, {
       messageId: taskParams.messageId,
+      attempt,
     })
 
     const startTime = Date.now()
@@ -180,7 +188,7 @@ export class ECSOrchestrator {
       const userData = generateUserData(taskParams, this.config, processingImage)
 
       // 3. 创建 ECS 实例
-      instanceId = await this.createInstance(taskParams.messageId, userData)
+      instanceId = await this.createInstance(taskParams.messageId, userData, attempt)
 
       // 4. 注册运行中的实例
       const context: InstanceContext = {
@@ -192,10 +200,10 @@ export class ECSOrchestrator {
 
       // 5. RunInstances 创建的实例会自动启动，无需再调 StartInstance（否则会 403）
       // 6. 等待实例进入 Running 状态
-      await this.waitForInstanceRunning(instanceId, taskParams.messageId)
+      await this.waitForInstanceRunning(instanceId, taskParams.messageId, attempt)
 
       // 7. 等待任务完成（轮询实例上的完成标记）
-      const result = await this.waitForTaskCompletion(instanceId, taskParams.messageId)
+      const result = await this.waitForTaskCompletion(instanceId, taskParams.messageId, attempt)
 
       const durationSeconds = (Date.now() - startTime) / 1000
 
@@ -217,12 +225,13 @@ export class ECSOrchestrator {
     } finally {
       // 8. 释放实例 + 释放槽位
       if (instanceId) {
-        await this.releaseInstance(instanceId, taskParams.messageId)
+        await this.releaseInstance(instanceId, taskParams.messageId, attempt)
         this.runningInstances.delete(instanceId)
       }
       this.activeSlots--
       log.info(`释放实例槽位 [${this.activeSlots}/${this.config.ecs.maxInstances}]`, {
         messageId: taskParams.messageId,
+        attempt,
       })
     }
   }
@@ -230,9 +239,14 @@ export class ECSOrchestrator {
   /**
    * 创建 ECS 抢占式实例
    */
-  private async createInstance(messageId: string, userData: string): Promise<string> {
+  private async createInstance(
+    messageId: string,
+    userData: string,
+    attempt: number,
+  ): Promise<string> {
     log.info('正在创建 ECS 实例...', {
       messageId,
+      attempt,
       instanceType: this.config.ecs.instanceType,
       spot: this.config.ecs.useSpotInstance,
     })
@@ -336,16 +350,20 @@ export class ECSOrchestrator {
   /**
    * 等待实例进入 Running 状态
    */
-  private async waitForInstanceRunning(instanceId: string, messageId: string): Promise<void> {
+  private async waitForInstanceRunning(
+    instanceId: string,
+    messageId: string,
+    attempt: number,
+  ): Promise<void> {
     const deadline = Date.now() + this.config.ecs.instanceStartTimeout
 
-    log.info('等待实例进入 Running 状态...', { instanceId, messageId })
+    log.info('等待实例进入 Running 状态...', { instanceId, messageId, attempt })
 
     while (Date.now() < deadline) {
       const status = await this.getInstanceStatus(instanceId)
 
       if (status === 'Running') {
-        log.info('实例已进入 Running 状态', { instanceId })
+        log.info('实例已进入 Running 状态', { instanceId, attempt })
         return
       }
 
@@ -353,7 +371,7 @@ export class ECSOrchestrator {
         throw new Error(`实例意外进入 ${status} 状态`)
       }
 
-      log.debug(`实例状态: ${status}，等待中...`, { instanceId })
+      log.debug(`实例状态: ${status}，等待中...`, { instanceId, attempt })
       await this.sleep(this.config.ecs.pollInterval)
     }
 
@@ -370,12 +388,17 @@ export class ECSOrchestrator {
    * - 之后：按配置的 pollInterval 检查
    * - 超过 taskTimeout：超时失败
    */
-  private async waitForTaskCompletion(instanceId: string, messageId: string): Promise<Omit<TaskResult, 'durationSeconds' | 'instanceId'>> {
+  private async waitForTaskCompletion(
+    instanceId: string,
+    messageId: string,
+    attempt: number,
+  ): Promise<Omit<TaskResult, 'durationSeconds' | 'instanceId'>> {
     const deadline = Date.now() + this.config.ecs.taskTimeout
 
     log.info('等待任务完成...', {
       instanceId,
       messageId,
+      attempt,
       timeoutMinutes: (this.config.ecs.taskTimeout / 60000).toFixed(1),
     })
 
@@ -392,7 +415,7 @@ export class ECSOrchestrator {
         const status = await this.getInstanceStatus(instanceId)
         if (status !== 'Running') {
           // 实例被回收或停止了
-          log.warn(`实例状态异常: ${status}`, { instanceId, messageId })
+          log.warn(`实例状态异常: ${status}`, { instanceId, messageId, attempt })
           return {
             success: false,
             error: `实例状态异常: ${status}（可能被抢占式回收）`,
@@ -407,7 +430,7 @@ export class ECSOrchestrator {
 
         if (checkResult === null) {
           // 云助手可能未安装或未就绪，等待
-          log.debug('云助手未就绪，等待...', { instanceId })
+          log.debug('云助手未就绪，等待...', { instanceId, attempt })
           await this.sleep(this.config.ecs.pollInterval)
           continue
         }
@@ -420,13 +443,13 @@ export class ECSOrchestrator {
           const resultJson = lines.slice(1).join('\n').trim()
           try {
             const result = JSON.parse(resultJson)
-            log.info('任务处理成功', { instanceId, messageId })
+            log.info('任务处理成功', { instanceId, messageId, attempt })
             return {
               success: true,
               outputVideoUrl: result.output_video_url,
             }
           } catch {
-            log.warn('结果 JSON 解析失败', { instanceId, resultJson })
+            log.warn('结果 JSON 解析失败', { instanceId, resultJson, attempt })
             return {
               success: true,
               outputVideoUrl: resultJson, // 尝试直接用原始内容
@@ -454,11 +477,13 @@ export class ECSOrchestrator {
         log.debug('任务处理中...', {
           instanceId,
           messageId,
+          attempt,
           elapsed: ((Date.now() - (this.runningInstances.get(instanceId)?.createdAt || Date.now())) / 60000).toFixed(1) + ' min',
         })
       } catch (error) {
         log.warn('检查任务状态失败', {
           instanceId,
+          attempt,
           error: error instanceof Error ? error.message : String(error),
         })
       }
@@ -568,8 +593,12 @@ export class ECSOrchestrator {
    * 先停止再释放，确保计费停止。
    * 若实例仍在 Initializing/Pending/Starting，会轮询等待后再删除，避免 403。
    */
-  async releaseInstance(instanceId: string, messageId: string): Promise<void> {
-    log.info('正在释放 ECS 实例...', { instanceId, messageId })
+  async releaseInstance(
+    instanceId: string,
+    messageId: string,
+    attempt: number = 0,
+  ): Promise<void> {
+    log.info('正在释放 ECS 实例...', { instanceId, messageId, attempt })
 
     const maxRetries = 24 // 约 2 分钟（每 5 秒重试）
     const retryInterval = 5000
@@ -661,7 +690,7 @@ export class ECSOrchestrator {
             instanceId: iid,
             ageMinutes: (age / 60000).toFixed(1),
           })
-          await this.releaseInstance(iid, 'cleanup')
+          await this.releaseInstance(iid, 'cleanup', 0)
         } else {
           log.info('残留实例创建时间较近，跳过清理', {
             instanceId: iid,

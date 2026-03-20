@@ -23,6 +23,7 @@ import sys
 import json
 import time
 import hashlib
+import uuid
 import logging
 import requests
 from pathlib import Path
@@ -46,12 +47,26 @@ def send_progress(webhook_url: str, message_id: str, stage: str,
     if not webhook_url:
         return
 
+    # 与 Node 侧 webhook-sender.ts 的 WebhookEventType 保持一致：
+    # downloading -> download_progress
+    # processing -> processing_progress
+    # uploading -> upload_progress
+    progress_stage_to_event_type = {
+        "downloading": "download_progress",
+        "processing": "processing_progress",
+        "uploading": "upload_progress",
+    }
+    event_type = progress_stage_to_event_type.get(stage)
+    if not event_type:
+        logger.warning(f"未知进度 stage={stage}，将回退为 event_type={stage}_progress")
+        event_type = f"{stage}_progress"
+
     webhook_secret = os.environ.get("WEBHOOK_SECRET", "")
     payload = {
         "job_id": message_id,
         "user_id": user_id,
         "status": stage.upper(),
-        "event_type": f"{stage}_progress",
+        "event_type": event_type,
         "current_stage": stage,
         "progress_percentage": percentage,
         "progress_message": message,
@@ -64,12 +79,16 @@ def send_progress(webhook_url: str, message_id: str, stage: str,
     ).hexdigest()
 
     try:
+        delivery = str(uuid.uuid4())
         requests.post(
             webhook_url,
-            json=payload,
+            data=payload_str,
             headers={
                 "Content-Type": "application/json",
                 "X-Webhook-Signature": signature,
+                # 让 Node/服务端可选地依赖该头进行路由/观测
+                "X-Webhook-Event": event_type,
+                "X-Webhook-Delivery": delivery,
             },
             timeout=10,
         )
