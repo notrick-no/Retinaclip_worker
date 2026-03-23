@@ -1,3 +1,17 @@
+# ========== 终端快捷命令（在项目根目录） ==========
+# 完整说明见 TESTING.md
+#
+# npm start              启动 Worker
+# npm run test:config    校验 .env（无网络）
+# npm run test:rabbitmq  测 RabbitMQ
+# npm run test:ecs       测 ECS API + 镜像
+# npm run pool           检查 ECS 池
+# npm run test:smoke     上面三项连通性连着跑
+# npm test               单元测试（Vitest）
+# npm run test:all       配置+单元+smoke+池（最全）
+#
+# ./scripts/rc.sh        查看 rc 子命令帮助
+#
 # ========== RabbitMQ（可选，默认值也有） ==========
 # 格式: amqp://用户名:密码@主机:端口
 RABBITMQ_URL=amqp://user:password@47.101.157.157:19168

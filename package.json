@@ -3,8 +3,19 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "start": "tsx index.ts",
+    "worker": "tsx index.ts",
+    "pool": "tsx scripts/test-ecs-pool.ts",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:unit": "vitest run",
+    "test:config": "tsx scripts/verify-config.ts",
+    "test:rabbitmq": "tsx scripts/test-rabbitmq.ts",
+    "test:ecs": "tsx scripts/test-ecs-api.ts",
+    "test:pool": "npm run pool",
+    "test:ecs-pool": "npm run pool",
+    "test:smoke": "npm run test:config && npm run test:rabbitmq && npm run test:ecs",
+    "test:all": "npm run test:config && npm run test:unit && npm run test:smoke && npm run pool"
   },
   "dependencies": {
     "amqplib": "^0.10.9",
