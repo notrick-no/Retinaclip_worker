@@ -80,6 +80,31 @@ fi
 
 mkdir -p "$NAS_MOUNT_POINT"
 
+# DNS 解析（便于排查）
+if command -v getent >/dev/null 2>&1; then
+  getent hosts "$NAS_SERVER" >/dev/null 2>&1 || true
+fi
+if command -v nslookup >/dev/null 2>&1; then
+  nslookup "$NAS_SERVER" >/dev/null 2>&1 || true
+fi
+
+# 2049 端口探测（提示安全组/监听/网络）
+if command -v nc >/dev/null 2>&1; then
+  nc -vz -w 3 "$NAS_SERVER" 2049 >/dev/null 2>&1 || true
+else
+  python3 - <<PY >/dev/null 2>&1 || true
+import socket
+h="$NAS_SERVER"; p=2049
+s=socket.socket(); s.settimeout(3)
+try:
+  s.connect((h,p))
+except Exception:
+  pass
+finally:
+  s.close()
+PY
+fi
+
 # 1) 安装 NFS 客户端（mount.nfs）
 if ! command -v mount.nfs >/dev/null 2>&1; then
   echo "[$(date -Iseconds)] 未检测到 nfs client（mount.nfs），开始安装 nfs-utils..."
@@ -97,34 +122,36 @@ if ! command -v mount.nfs >/dev/null 2>&1; then
   exit 1
 fi
 
-# 2) 写入 /etc/fstab（避免重启后丢失；server 基于 worker 域名推导）
+# 2) 清理旧挂载（避免旧状态干扰）
+if mountpoint -q "$NAS_MOUNT_POINT" 2>/dev/null; then
+  echo "[$(date -Iseconds)] 检测到已挂载，先卸载重试..."
+  umount -f "$NAS_MOUNT_POINT" >/dev/null 2>&1 || true
+fi
+
+# 3) 写入 /etc/fstab（避免重启后丢失）
 FSTAB_LINE="$NAS_SERVER:$NAS_EXPORT_PATH $NAS_MOUNT_POINT nfs4 _netdev,nofail,vers=4.0,soft,timeo=600,retrans=2 0 0"
 if ! grep -qF "$NAS_SERVER:$NAS_EXPORT_PATH $NAS_MOUNT_POINT nfs4" /etc/fstab 2>/dev/null; then
   echo "$FSTAB_LINE" >> /etc/fstab
 fi
+tail -n 5 /etc/fstab 2>/dev/null || true
 
-# 3) 挂载
-if grep -qE "[[:space:]]$NAS_MOUNT_POINT[[:space:]]" /proc/mounts 2>/dev/null; then
-  echo "[$(date -Iseconds)] NAS 已挂载：$NAS_MOUNT_POINT"
-else
-  echo "[$(date -Iseconds)] 尝试挂载 NAS..."
+# 4) 挂载（带超时，防卡死）
+echo "[$(date -Iseconds)] 开始挂载（带 20 秒超时）..."
+set +e
+timeout 20 mount -v -t nfs4 -o vers=4.0,soft,timeo=600,retrans=2 "$NAS_SERVER:$NAS_EXPORT_PATH" "$NAS_MOUNT_POINT"
+MOUNT_EC=$?
+set -e
 
-# NFSv4 使用 2049 端口；先做连通性提示（不保证一定准确）
-if command -v bash >/dev/null 2>&1; then
-  if ! bash -c "timeout 3 bash -c 'cat < /dev/null > /dev/tcp/$NAS_SERVER/2049' " >/dev/null 2>&1; then
-    echo "[$(date -Iseconds)] WARN: NAS 端口 2049 可能不可达（连接被拒绝/超时/安全组拦截）"
-  fi
+if [ "$MOUNT_EC" -ne 0 ]; then
+  echo "[$(date -Iseconds)] ERROR: mount 失败，exit=$MOUNT_EC"
+  dmesg 2>/dev/null | tail -n 80 || true
+  journalctl -n 80 --no-pager 2>/dev/null || true
+  echo '{"success":false,"error":"NAS mount failed: mount timeout/connection error"}' > "$RESULT_FILE"
+  echo "FAILED" > "$DONE_FILE"
+  exit 1
 fi
 
-  if ! mount -a; then
-    mount -t nfs4 -o _netdev,vers=4.0,soft,timeo=600,retrans=2 "$NAS_SERVER:$NAS_EXPORT_PATH" "$NAS_MOUNT_POINT" || {
-      echo '{"success":false,"error":"NAS mount failed: mount.nfs4 connect failed"}' > "$RESULT_FILE"
-      echo "FAILED" > "$DONE_FILE"
-      exit 1
-    }
-  fi
-fi
-
+mount | grep "$NAS_MOUNT_POINT" || true
 df -h "$NAS_MOUNT_POINT" 2>/dev/null || true
 `.trim()
 }
