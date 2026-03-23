@@ -56,10 +56,6 @@ function tagMap(instance: any): Record<string, string> {
   return m
 }
 
-function matchesWorkerImageAndType(instance: any, cfg: WorkerConfig): boolean {
-  return instance.imageId === cfg.ecs.imageId && instance.instanceType === cfg.ecs.instanceType
-}
-
 async function main() {
   const poolProfileArg = process.argv[2]?.trim() || ''
 
@@ -85,16 +81,16 @@ async function main() {
   console.log(`  池 lifecycle 标签   : ${WORKER_ECS_TAGS.lifecycle} = ${config.ecs.poolLifecycleTagValue}`)
   console.log(`  pool profile 键     : ${config.ecs.poolProfileTagKey}`)
   console.log(
-    `  pool profile 筛选   : ${config.ecs.poolProfileFilterEnabled ? '开启（WORKER_ECS_POOL_PROFILE_FILTER_ENABLED）' : '关闭（仅 lifecycle+镜像+规格）'}`,
+    `  pool profile 筛选   : ${config.ecs.poolProfileFilterEnabled ? '开启（WORKER_ECS_POOL_PROFILE_FILTER_ENABLED）' : '关闭（仅 lifecycle 池标签）'}`,
   )
-  console.log(`  期望 imageId        : ${config.ecs.imageId}`)
-  console.log(`  期望 instanceType   : ${config.ecs.instanceType}`)
+  console.log(`  配置 imageId（新建 ephemeral 用）: ${config.ecs.imageId}`)
+  console.log(`  配置 instanceType（新建 ephemeral 用）: ${config.ecs.instanceType}`)
   if (poolProfileArg) {
     console.log(`  本次模拟 poolProfile : ${poolProfileArg}`)
   }
   console.log('')
 
-  // ----- 带 lifecycle=pool 的全部实例（不限制镜像/规格）-----
+  // ----- 带 lifecycle=pool 的全部实例 -----
   const poolInstances = await describeAllPages(client, (pageNumber) => {
     return new $ECS.DescribeInstancesRequest({
       regionId: config.ecs.regionId,
@@ -120,12 +116,10 @@ async function main() {
       const img = i.imageId || '?'
       const typ = i.instanceType || '?'
       const zone = i.zoneId || '?'
-      const match = matchesWorkerImageAndType(i, config)
       const tags = tagMap(i)
       const prof = tags[config.ecs.poolProfileTagKey] || '(无 profile 标签)'
       const flags: string[] = []
-      if (!match) flags.push('镜像或规格与配置不一致')
-      if (st === 'Stopped' && match) flags.push('可被编排器选为空闲池（无 profile 过滤时）')
+      if (st === 'Stopped') flags.push('Stopped：可被编排器选为空闲池（不校验镜像/规格）')
       if (st === 'Running') flags.push('运行中')
       console.log(`  • ${id}  ${name}`)
       console.log(`      status=${st}  zone=${zone}`)
@@ -137,11 +131,9 @@ async function main() {
   }
   console.log('')
 
-  // ----- 与 findIdlePoolInstance 一致：Stopped + image + type + lifecycle -----
+  // ----- 与 findIdlePoolInstance 一致：Stopped + lifecycle（+ 可选 profile）-----
   const idleReq = new $ECS.DescribeInstancesRequest({
     regionId: config.ecs.regionId,
-    imageId: config.ecs.imageId,
-    instanceType: config.ecs.instanceType,
     status: 'Stopped',
     pageSize: 50,
     tag: [

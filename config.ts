@@ -86,7 +86,7 @@ export interface WorkerConfig {
     mockDelaySeconds?: number
     /**
      * 是否启用 ECS「池」：优先启动已存在且已停止的池实例；任务结束后仅 Stop，不释放。
-     * 池内机器需打标签 `retinaclip:lifecycle=<poolLifecycleTagValue>`，且镜像/规格与配置一致。
+     * 池内机器需打标签 `retinaclip:lifecycle=<poolLifecycleTagValue>`；不校验镜像/规格是否与 ALIYUN_* 一致。
      */
     poolEnabled: boolean
     /** 池实例标签 `retinaclip:lifecycle` 的值，默认 `pool` */
@@ -99,7 +99,7 @@ export interface WorkerConfig {
     poolProfileTagKey: string
     /**
      * 为 true 时 findIdlePoolInstance 会要求实例带 poolProfileTagKey=任务解析出的 profile。
-     * 为 false 时仅按 lifecycle 池标签 + 镜像/规格匹配（适合全池共用、实例可不打 profile）。
+     * 为 false 时仅按 lifecycle 池标签（适合全池共用、实例可不打 profile）。
      */
     poolProfileFilterEnabled: boolean
     /**

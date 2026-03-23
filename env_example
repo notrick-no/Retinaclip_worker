@@ -57,7 +57,7 @@ WORKER_ECS_POOL_ENABLED=true
 WORKER_ECS_POOL_TAG_VALUE=pool
 # 池 profile 标签键（默认 retinaclip:pool-profile；与 WORKER_ECS_POOL_PROFILE_MAP 搭配）
 # WORKER_ECS_POOL_PROFILE_TAG_KEY=retinaclip:pool-profile
-# 是否在挑选池实例时按 profile 标签过滤（默认 false：只要有 pool 标签且镜像/规格一致即可；多业务分子池时改为 true）
+# 是否在挑选池实例时按 profile 标签过滤（默认 false：只要有 pool 生命周期标签即可，不校验镜像/规格；多业务分子池时改为 true）
 # WORKER_ECS_POOL_PROFILE_FILTER_ENABLED=true
 
 # 主规格无库存时依次尝试的备选规格（逗号分隔，如 gn7i 无货试 gn6i）

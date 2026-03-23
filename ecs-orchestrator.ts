@@ -199,7 +199,7 @@ export class ECSOrchestrator {
     let disposeMode: 'stop' | 'delete' = 'delete'
 
     try {
-      // 池内机器规格与配置主规格一致；GPU 标志与主规格对齐
+      // 任务脚本里 GPU 等参数按配置主规格生成；池实例可与配置镜像/规格不同，需自行保证能跑任务镜像
       const taskScript = generateTaskRunnerShellScript(
         taskParams,
         this.config,
@@ -517,7 +517,7 @@ export class ECSOrchestrator {
   }
 
   /**
-   * 查找池内空闲实例：已停止、镜像与规格与配置一致、带 retinaclip:lifecycle 池标签；
+   * 查找池内空闲实例：已停止 + retinaclip:lifecycle 池标签（不校验镜像/规格是否与配置一致）。
    * 若 poolProfileFilterEnabled 且任务带 poolProfile，再要求 poolProfileTagKey 匹配。
    */
   private async findIdlePoolInstance(poolProfile?: string): Promise<string | null> {
@@ -539,8 +539,6 @@ export class ECSOrchestrator {
 
       const request = new $ECS.DescribeInstancesRequest({
         regionId: this.config.ecs.regionId,
-        imageId: this.config.ecs.imageId,
-        instanceType: this.config.ecs.instanceType,
         status: 'Stopped',
         pageSize: 50,
         tag: tags,
