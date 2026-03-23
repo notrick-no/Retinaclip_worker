@@ -122,9 +122,13 @@ if ! command -v mount.nfs >/dev/null 2>&1; then
   exit 1
 fi
 
-# 2) 清理旧挂载（避免旧状态干扰）
-if mountpoint -q "$NAS_MOUNT_POINT" 2>/dev/null; then
-  echo "[$(date -Iseconds)] 检测到已挂载，先卸载重试..."
+# 2) 幂等：若已挂载到目标 server:export，则跳过 mount；否则（/mnt 已被挂载但不匹配）先卸载重挂
+NEED_MOUNT=1
+if grep -qF "$NAS_SERVER:$NAS_EXPORT_PATH $NAS_MOUNT_POINT" /proc/mounts 2>/dev/null; then
+  echo "[$(date -Iseconds)] NAS 已挂载：$NAS_MOUNT_POINT（server/export 匹配，跳过挂载）"
+  NEED_MOUNT=0
+elif mountpoint -q "$NAS_MOUNT_POINT" 2>/dev/null; then
+  echo "[$(date -Iseconds)] 检测到 /mnt 已挂载但不匹配当前 NAS server/export，先卸载重试..."
   umount -f "$NAS_MOUNT_POINT" >/dev/null 2>&1 || true
 fi
 
@@ -135,20 +139,22 @@ if ! grep -qF "$NAS_SERVER:$NAS_EXPORT_PATH $NAS_MOUNT_POINT nfs4" /etc/fstab 2>
 fi
 tail -n 5 /etc/fstab 2>/dev/null || true
 
-# 4) 挂载（带超时，防卡死）
-echo "[$(date -Iseconds)] 开始挂载（带 20 秒超时）..."
-set +e
-timeout 20 mount -v -t nfs4 -o vers=4.0,soft,timeo=600,retrans=2 "$NAS_SERVER:$NAS_EXPORT_PATH" "$NAS_MOUNT_POINT"
-MOUNT_EC=$?
-set -e
+# 4) 挂载（带超时，防卡死；仅当 NEED_MOUNT=1 时执行）
+if [ "$NEED_MOUNT" -eq 1 ]; then
+  echo "[$(date -Iseconds)] 开始挂载（带 20 秒超时）..."
+  set +e
+  timeout 20 mount -v -t nfs4 -o vers=4.0,soft,timeo=600,retrans=2 "$NAS_SERVER:$NAS_EXPORT_PATH" "$NAS_MOUNT_POINT"
+  MOUNT_EC=$?
+  set -e
 
-if [ "$MOUNT_EC" -ne 0 ]; then
-  echo "[$(date -Iseconds)] ERROR: mount 失败，exit=$MOUNT_EC"
-  dmesg 2>/dev/null | tail -n 80 || true
-  journalctl -n 80 --no-pager 2>/dev/null || true
-  echo '{"success":false,"error":"NAS mount failed: mount timeout/connection error"}' > "$RESULT_FILE"
-  echo "FAILED" > "$DONE_FILE"
-  exit 1
+  if [ "$MOUNT_EC" -ne 0 ]; then
+    echo "[$(date -Iseconds)] ERROR: mount 失败，exit=$MOUNT_EC"
+    dmesg 2>/dev/null | tail -n 80 || true
+    journalctl -n 80 --no-pager 2>/dev/null || true
+    echo '{"success":false,"error":"NAS mount failed: mount timeout/connection error"}' > "$RESULT_FILE"
+    echo "FAILED" > "$DONE_FILE"
+    exit 1
+  fi
 fi
 
 mount | grep "$NAS_MOUNT_POINT" || true
