@@ -21,6 +21,23 @@ import { TaskParams } from './domain/task'
 import { WORKER_HOST_PATHS } from './worker-branding'
 
 /**
+ * 选择可写的宿主机日志路径（云助手有时对 /var/log 无写权限），再交给 tee。
+ */
+function shellSelectWorkerLogSnippet(): string {
+  const preferred = WORKER_HOST_PATHS.workerLog
+  const fallback = WORKER_HOST_PATHS.workerLogFallback
+  return `
+LOG_FILE='${preferred}'
+if ! touch "$LOG_FILE" 2>/dev/null || [ ! -w "$LOG_FILE" ]; then
+  LOG_FILE='${fallback}'
+  touch "$LOG_FILE" 2>/dev/null || true
+fi
+exec > >(tee -a "$LOG_FILE") 2>&1
+echo "[$(date -Iseconds)] RetinaClip 宿主机日志: $LOG_FILE"
+`.trim()
+}
+
+/**
  * 从内网镜像名 `host:port/repo:tag` 提取 registry，并与配置的列表合并（去重）。
  * 用于写入 Docker `insecure-registries`（HTTP 私有仓）。
  */
@@ -116,9 +133,8 @@ set -euo pipefail
 
 RESULT_FILE="${H.taskResult}"
 DONE_FILE="${H.taskDone}"
-LOG_FILE="${H.workerLog}"
 
-exec > >(tee -a "$LOG_FILE") 2>&1
+${shellSelectWorkerLogSnippet()}
 
 echo "[$(date -Iseconds)] ===== RetinaClip Worker Mock 启动 ====="
 echo "[$(date -Iseconds)] 任务 ID: ${task.messageId}"
@@ -301,11 +317,10 @@ set -euo pipefail
 # 生成时间: ${new Date().toISOString()}
 # =========================================================
 
-LOG_FILE="${H.workerLog}"
 RESULT_FILE="${H.taskResult}"
 DONE_FILE="${H.taskDone}"
 
-exec > >(tee -a "$LOG_FILE") 2>&1
+${shellSelectWorkerLogSnippet()}
 
 echo "[$(date -Iseconds)] ===== RetinaClip Worker 启动 ====="
 echo "[$(date -Iseconds)] 任务 ID: ${task.messageId}"

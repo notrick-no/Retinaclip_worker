@@ -17,7 +17,10 @@ export const WORKER_HOST_PATHS = {
   taskResult: '/tmp/retinaclip-task-result',
   taskDone: '/tmp/retinaclip-task-done',
   taskEnv: '/tmp/retinaclip-task.env',
+  /** 首选路径；若云助手/权限无法写 /var/log，启动脚本会回退到 {@link WORKER_HOST_PATHS.workerLogFallback} */
   workerLog: '/var/log/retinaclip-worker.log',
+  /** 与 cloud-init 内 bash 回退路径保持一致（排查时可 tail 此文件） */
+  workerLogFallback: '/tmp/retinaclip-worker.log',
   containerStdout: '/tmp/retinaclip-container-stdout.log',
   containerStderr: '/tmp/retinaclip-container-stderr.log',
 } as const
