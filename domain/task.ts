@@ -18,7 +18,7 @@ export interface TaskParams {
   operations?: string[]
   qualityPreset?: string
   /**
-   * 池实例第二维标签 `mingle:pool-profile` 等的取值；由 WORKER_ECS_POOL_PROFILE_MAP 解析。
+   * 池实例第二维标签 `retinaclip:pool-profile`（默认，可配置）等的取值；由 WORKER_ECS_POOL_PROFILE_MAP 解析。
    * 未设置时池查询不按 profile 过滤（兼容仅打 lifecycle=pool 的旧池）。
    */
   poolProfile?: string

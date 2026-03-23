@@ -1,5 +1,5 @@
 /**
- * Mingle Worker - 阿里云 ECS 实例编排任务处理器
+ * RetinaClip Worker - 阿里云 ECS 实例编排任务处理器
  * 
  * 入口文件，负责：
  * 1. 加载配置
@@ -61,7 +61,7 @@ async function main() {
   setLogLevel(config.log.level)
 
   log.info('═══════════════════════════════════════════════')
-  log.info('  Mingle Worker - 阿里云 ECS 实例编排器 启动中')
+  log.info('  RetinaClip Worker - 阿里云 ECS 实例编排器 启动中')
   log.info('═══════════════════════════════════════════════')
   log.info('配置信息', {
     queue: config.rabbitmq.queue,

@@ -8,6 +8,8 @@
  * - 重试策略：实例被回收或失败时重新创建
  */
 
+import { DEFAULT_POOL_PROFILE_TAG_KEY } from './worker-branding'
+
 /** 解析自 WORKER_PROCESSING_IMAGE_MAP / WORKER_ECS_POOL_PROFILE_MAP 的 JSON 对象 */
 export type ProcessingRouteMap = Record<string, string>
 
@@ -18,7 +20,7 @@ export interface WorkerConfig {
     defaultImage: string
     /** 键：sortedOps@quality、sortedOps、@quality */
     imageMap: ProcessingRouteMap
-    /** 键同上，值为池标签 mingle:pool-profile 的 Tag Value */
+    /** 键同上，值为池标签 `retinaclip:pool-profile`（可配置）的 Tag Value */
     poolProfileMap: ProcessingRouteMap
   }
 
@@ -84,10 +86,10 @@ export interface WorkerConfig {
     mockDelaySeconds?: number
     /**
      * 是否启用 ECS「池」：优先启动已存在且已停止的池实例；任务结束后仅 Stop，不释放。
-     * 池内机器需打标签 `mingle:lifecycle=<poolLifecycleTagValue>`，且镜像/规格与配置一致。
+     * 池内机器需打标签 `retinaclip:lifecycle=<poolLifecycleTagValue>`，且镜像/规格与配置一致。
      */
     poolEnabled: boolean
-    /** 池实例标签 `mingle:lifecycle` 的值，默认 `pool` */
+    /** 池实例标签 `retinaclip:lifecycle` 的值，默认 `pool` */
     poolLifecycleTagValue: string
     /**
      * 池实例可选第二维标签键，用于区分业务池（如字幕 / 放大）。
@@ -169,7 +171,7 @@ export function loadConfig(): WorkerConfig {
 
   const instanceType = env('ALIYUN_ECS_INSTANCE_TYPE', 'ecs.gn5i-c2g1.large')
   const regionId = env('ALIYUN_ECS_REGION', 'cn-shanghai')
-  const instanceNamePrefix = env('ALIYUN_ECS_INSTANCE_NAME_PREFIX', 'mingle-worker')
+  const instanceNamePrefix = env('ALIYUN_ECS_INSTANCE_NAME_PREFIX', 'retinaclip-worker')
 
   const maxInstances = parseIntEnv('WORKER_MAX_INSTANCES', 5, { min: 1 })
   const systemDiskSize = parseIntEnv('ALIYUN_ECS_SYSTEM_DISK_SIZE', 40, { min: 1 })
@@ -186,7 +188,7 @@ export function loadConfig(): WorkerConfig {
       ? parseFloatEnv('ALIYUN_ECS_SPOT_PRICE_LIMIT', { min: 0 })
       : undefined
 
-  const defaultProcessingImage = env('WORKER_PROCESSING_IMAGE', 'mingle-processor:latest')
+  const defaultProcessingImage = env('WORKER_PROCESSING_IMAGE', 'retinaclip-processor:latest')
   const processingImageMap = parseJsonObjectEnv('WORKER_PROCESSING_IMAGE_MAP', {})
   const poolProfileMap = parseJsonObjectEnv('WORKER_ECS_POOL_PROFILE_MAP', {})
   const instanceTypeFallback = env('ALIYUN_ECS_INSTANCE_TYPE_FALLBACK', '')
@@ -235,7 +237,9 @@ export function loadConfig(): WorkerConfig {
       mockDelaySeconds: parseIntEnv('WORKER_MOCK_DELAY_SECONDS', 60, { min: 1 }),
       poolEnabled: parseBoolEnv('WORKER_ECS_POOL_ENABLED', false),
       poolLifecycleTagValue: env('WORKER_ECS_POOL_TAG_VALUE', 'pool').trim() || 'pool',
-      poolProfileTagKey: env('WORKER_ECS_POOL_PROFILE_TAG_KEY', 'mingle:pool-profile').trim() || 'mingle:pool-profile',
+      poolProfileTagKey:
+        env('WORKER_ECS_POOL_PROFILE_TAG_KEY', DEFAULT_POOL_PROFILE_TAG_KEY).trim() ||
+        DEFAULT_POOL_PROFILE_TAG_KEY,
       instanceTypeFallback,
       userdataDockerPolicy: parseEnumEnv<'auto' | 'require_host'>('WORKER_ECS_USERDATA_DOCKER_POLICY', {
         defaultValue: 'auto',

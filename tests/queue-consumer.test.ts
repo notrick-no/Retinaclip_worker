@@ -71,7 +71,7 @@ describe('queue-consumer.ts', () => {
 
     const config: any = {
       processing: {
-        defaultImage: 'mingle-processor:latest',
+        defaultImage: 'retinaclip-processor:latest',
         imageMap: {},
         poolProfileMap: {},
       },
@@ -90,7 +90,7 @@ describe('queue-consumer.ts', () => {
         instanceType: 'ecs.gn5i-c2g1.large',
         securityGroupId: 'sg-1',
         vswitchId: 'vs-1',
-        instanceNamePrefix: 'mingle',
+        instanceNamePrefix: 'retinaclip',
         maxInstances: 1,
         systemDiskSize: 40,
         systemDiskCategory: 'cloud_essd',
@@ -103,7 +103,7 @@ describe('queue-consumer.ts', () => {
         mockProcessing: true,
         poolEnabled: false,
         poolLifecycleTagValue: 'pool',
-        poolProfileTagKey: 'mingle:pool-profile',
+        poolProfileTagKey: 'retinaclip:pool-profile',
         instanceTypeFallback: [],
         userdataDockerPolicy: 'auto',
         prefilterAvailableResource: false,
@@ -189,7 +189,7 @@ describe('queue-consumer.ts', () => {
 
     const config: any = {
       processing: {
-        defaultImage: 'mingle-processor:latest',
+        defaultImage: 'retinaclip-processor:latest',
         imageMap: {},
         poolProfileMap: {},
       },
@@ -208,7 +208,7 @@ describe('queue-consumer.ts', () => {
         instanceType: 'ecs.gn5i-c2g1.large',
         securityGroupId: 'sg-1',
         vswitchId: 'vs-1',
-        instanceNamePrefix: 'mingle',
+        instanceNamePrefix: 'retinaclip',
         maxInstances: 1,
         systemDiskSize: 40,
         systemDiskCategory: 'cloud_essd',
@@ -221,7 +221,7 @@ describe('queue-consumer.ts', () => {
         mockProcessing: true,
         poolEnabled: false,
         poolLifecycleTagValue: 'pool',
-        poolProfileTagKey: 'mingle:pool-profile',
+        poolProfileTagKey: 'retinaclip:pool-profile',
         instanceTypeFallback: [],
         userdataDockerPolicy: 'auto',
         prefilterAvailableResource: false,

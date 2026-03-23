@@ -53,8 +53,8 @@ describe('config.ts', () => {
     expect(cfg.rabbitmq.queue).toBe('media.uploaded')
     expect(cfg.rabbitmq.prefetchCount).toBe(2)
     expect(cfg.webhook.secret).toBe('wh-secret')
-    expect(cfg.processing.defaultImage).toBe('mingle-processor:latest')
-    expect(cfg.ecs.poolProfileTagKey).toBe('mingle:pool-profile')
+    expect(cfg.processing.defaultImage).toBe('retinaclip-processor:latest')
+    expect(cfg.ecs.poolProfileTagKey).toBe('retinaclip:pool-profile')
     expect(cfg.ecs.userdataDockerPolicy).toBe('auto')
   })
 

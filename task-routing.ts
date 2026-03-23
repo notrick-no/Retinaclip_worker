@@ -20,7 +20,7 @@ export interface TaskRoutingMessageSlice {
 
 export interface ResolvedTaskRouting {
   processingImage: string
-  /** 打在池实例上的 mingle:pool-profile 值；未配置映射时不返回 */
+  /** 打在池实例上的 retinaclip:pool-profile（可配置键）值；未配置映射时不返回 */
   poolProfile?: string
   /** 用于日志的查找说明 */
   resolvedFrom: string

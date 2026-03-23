@@ -13,13 +13,12 @@
  * │ 6. 写入完成标记文件（供编排器轮询检测）     │
  * └─────────────────────────────────────────────┘
  * 
- * 完成标记约定：
- *   /tmp/mingle-task-done    - 任务完成标记
- *   /tmp/mingle-task-result  - 结果 JSON 文件
+ * 完成标记约定：见 {@link WORKER_HOST_PATHS}
  */
 
 import { WorkerConfig } from './config'
 import { TaskParams } from './domain/task'
+import { WORKER_HOST_PATHS } from './worker-branding'
 
 /**
  * 生成 cloud-init UserData 脚本
@@ -79,27 +78,28 @@ function generateMockStartupScript(task: TaskParams, config: WorkerConfig): stri
   const esc = (s: string) => s.replace(/'/g, "'\\''")
   const delaySec = Math.max(1, config.ecs.mockDelaySeconds ?? 60)
   const resultJson = JSON.stringify({ output_video_url: task.videoDownloadUrl })
+  const H = WORKER_HOST_PATHS
 
   return `#!/bin/bash
 set -euo pipefail
 
 # =========================================================
-# Mingle Worker - Mock 模式（算法占位，延迟后返回原视频）
+# RetinaClip Worker - Mock 模式（算法占位，延迟后返回原视频）
 # 任务 ID: ${task.messageId}
 # =========================================================
 
-RESULT_FILE="/tmp/mingle-task-result"
-DONE_FILE="/tmp/mingle-task-done"
-LOG_FILE="/var/log/mingle-worker.log"
+RESULT_FILE="${H.taskResult}"
+DONE_FILE="${H.taskDone}"
+LOG_FILE="${H.workerLog}"
 
 exec > >(tee -a "$LOG_FILE") 2>&1
 
-echo "[$(date -Iseconds)] ===== Mingle Worker Mock 启动 ====="
+echo "[$(date -Iseconds)] ===== RetinaClip Worker Mock 启动 ====="
 echo "[$(date -Iseconds)] 任务 ID: ${task.messageId}"
 echo "[$(date -Iseconds)] Mock: 延迟 ${delaySec}s 后返回原视频 URL"
 
 # 写入任务环境变量（与真实模式一致，便于后续切换）
-cat > /tmp/mingle-task.env << 'ENVEOF'
+cat > ${H.taskEnv} << 'ENVEOF'
 TASK_MESSAGE_ID=${esc(task.messageId)}
 TASK_VIDEO_URL=${esc(task.videoDownloadUrl)}
 ${task.videoUploadUrl ? `TASK_VIDEO_UPLOAD_URL=${esc(task.videoUploadUrl)}` : ''}
@@ -118,7 +118,7 @@ RESULT_JSON='${esc(resultJson)}'
 echo "$RESULT_JSON" > "$RESULT_FILE"
 echo "SUCCESS" > "$DONE_FILE"
 
-rm -f /tmp/mingle-task.env
+rm -f ${H.taskEnv}
 echo "[$(date -Iseconds)] ===== Mock 任务完成 ====="
 `
 }
@@ -134,6 +134,7 @@ function generateDockerStartupScript(
 ): string {
   // 转义 shell 特殊字符
   const esc = (s: string) => s.replace(/'/g, "'\\''")
+  const H = WORKER_HOST_PATHS
   const hostInst = hostInstanceTypeForGpu ?? config.ecs.instanceType
   const useGpuFlag = hostInst.includes('gn')
   const dockerPolicy = config.ecs.userdataDockerPolicy
@@ -201,26 +202,26 @@ fi
 set -euo pipefail
 
 # =========================================================
-# Mingle Worker - ECS 自动化启动脚本
+# RetinaClip Worker - ECS 自动化启动脚本
 # 由 Worker 编排器自动生成，请勿手动修改
 # 
 # 任务 ID: ${task.messageId}
 # 生成时间: ${new Date().toISOString()}
 # =========================================================
 
-LOG_FILE="/var/log/mingle-worker.log"
-RESULT_FILE="/tmp/mingle-task-result"
-DONE_FILE="/tmp/mingle-task-done"
+LOG_FILE="${H.workerLog}"
+RESULT_FILE="${H.taskResult}"
+DONE_FILE="${H.taskDone}"
 
 exec > >(tee -a "$LOG_FILE") 2>&1
 
-echo "[$(date -Iseconds)] ===== Mingle Worker 启动 ====="
+echo "[$(date -Iseconds)] ===== RetinaClip Worker 启动 ====="
 echo "[$(date -Iseconds)] 任务 ID: ${task.messageId}"
 
 # ---------------------------------------------------------
 # 1. 写入任务环境变量
 # ---------------------------------------------------------
-cat > /tmp/mingle-task.env << 'ENVEOF'
+cat > ${H.taskEnv} << 'ENVEOF'
 TASK_MESSAGE_ID=${esc(task.messageId)}
 TASK_VIDEO_URL=${esc(task.videoDownloadUrl)}
 ${task.videoUploadUrl ? `TASK_VIDEO_UPLOAD_URL=${esc(task.videoUploadUrl)}` : ''}
@@ -314,21 +315,21 @@ fi
 # ---------------------------------------------------------
 echo "[$(date -Iseconds)] 启动处理容器..."
 
-CONTAINER_NAME="mingle-task-${task.messageId}"
+CONTAINER_NAME="retinaclip-task-${task.messageId}"
 
 # 运行容器，使用 --env-file 传递任务参数
 # --rm: 容器退出后自动删除
 # --network host: 使用宿主机网络（方便访问 webhook）
 docker run --rm \\
   --name "$CONTAINER_NAME" \\
-  --env-file /tmp/mingle-task.env \\
+  --env-file ${H.taskEnv} \\
   --network host \\
   --tmpfs /tmp:rw,noexec,nosuid,size=4g \\
   --memory=${Math.floor(config.ecs.maxInstances > 1 ? 8 : 16)}g \\
   --cpus=${config.ecs.maxInstances > 1 ? 4 : 8} \\
   ${useGpuFlag ? '--gpus all' : ''} \\
   "$IMAGE" \\
-  > /tmp/mingle-container-stdout.log 2> /tmp/mingle-container-stderr.log
+  > ${H.containerStdout} 2> ${H.containerStderr}
 
 CONTAINER_EXIT_CODE=$?
 
@@ -339,7 +340,7 @@ echo "[$(date -Iseconds)] 容器退出码: $CONTAINER_EXIT_CODE"
 # ---------------------------------------------------------
 if [ $CONTAINER_EXIT_CODE -eq 0 ]; then
   # 容器成功：从 stdout 最后一行取出结果 JSON
-  RESULT_JSON=$(tail -1 /tmp/mingle-container-stdout.log)
+  RESULT_JSON=$(tail -1 ${H.containerStdout})
   
   # 验证是否为有效 JSON
   if echo "$RESULT_JSON" | python3 -c "import sys,json; json.load(sys.stdin)" 2>/dev/null; then
@@ -353,7 +354,7 @@ if [ $CONTAINER_EXIT_CODE -eq 0 ]; then
   fi
 else
   # 容器失败
-  STDERR_TAIL=$(tail -5 /tmp/mingle-container-stderr.log 2>/dev/null || echo "No stderr")
+  STDERR_TAIL=$(tail -5 ${H.containerStderr} 2>/dev/null || echo "No stderr")
   # 转义 JSON 中的特殊字符
   STDERR_ESCAPED=$(echo "$STDERR_TAIL" | python3 -c "import sys,json; print(json.dumps(sys.stdin.read()))" 2>/dev/null || echo '"Unknown error"')
   echo '{"success":false,"error":'"$STDERR_ESCAPED"',"exit_code":'"$CONTAINER_EXIT_CODE"'}' > "$RESULT_FILE"
@@ -364,8 +365,8 @@ fi
 # ---------------------------------------------------------
 # 6. 清理敏感文件
 # ---------------------------------------------------------
-rm -f /tmp/mingle-task.env
+rm -f ${H.taskEnv}
 
-echo "[$(date -Iseconds)] ===== Mingle Worker 脚本结束 ====="
+echo "[$(date -Iseconds)] ===== RetinaClip Worker 脚本结束 ====="
 `
 }

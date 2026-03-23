@@ -6,7 +6,7 @@
  * ╠══════════════════════════════════════════════════════════════╣
  * ║                                                              ║
  * ║  1. 池 + 按需扩容                                            ║
- * ║     - 可选：优先复用带 mingle:lifecycle=pool 的已停止实例      ║
+ * ║     - 可选：优先复用带 retinaclip:lifecycle=pool 的已停止实例      ║
  * ║       任务结束仅 Stop，保留在池                               ║
  * ║     - 池无可用时 RunInstances 新建（标签 ephemeral）          ║
  * ║       任务结束 DeleteInstance 释放                            ║
@@ -37,6 +37,7 @@ import { WorkerConfig } from './config'
 import { generateTaskRunnerShellScript, generateUserData } from './cloud-init'
 import type { TaskParams } from './domain/task'
 import { createLogger } from './logger'
+import { WORKER_ECS_TAGS, WORKER_HOST_PATHS } from './worker-branding'
 
 const log = createLogger('ECS')
 
@@ -215,7 +216,7 @@ export class ECSOrchestrator {
           log.info('复用池内 ECS（Stopped → Running）', {
             instanceId,
             messageId: taskParams.messageId,
-            tag: `mingle:lifecycle=${this.config.ecs.poolLifecycleTagValue}`,
+            tag: `${WORKER_ECS_TAGS.lifecycle}=${this.config.ecs.poolLifecycleTagValue}`,
             poolProfile: taskParams.poolProfile,
           })
 
@@ -233,7 +234,7 @@ export class ECSOrchestrator {
           await this.sleep(20000)
           await this.runRemoteCommand(
             instanceId,
-            'rm -f /tmp/mingle-task-done /tmp/mingle-task-result',
+            `rm -f ${WORKER_HOST_PATHS.taskDone} ${WORKER_HOST_PATHS.taskResult}`,
           )
 
           await this.runRemoteLongRunningScript(instanceId, taskScript, taskParams.messageId, attempt)
@@ -319,10 +320,10 @@ export class ECSOrchestrator {
 
     const buildTags = () => {
       const tags = [
-        new $ECS.RunInstancesRequestTag({ key: 'mingle:role', value: 'worker' }),
-        new $ECS.RunInstancesRequestTag({ key: 'mingle:lifecycle', value: 'ephemeral' }),
-        new $ECS.RunInstancesRequestTag({ key: 'mingle:message-id', value: messageId }),
-        new $ECS.RunInstancesRequestTag({ key: 'mingle:created-at', value: new Date().toISOString() }),
+        new $ECS.RunInstancesRequestTag({ key: WORKER_ECS_TAGS.role, value: 'worker' }),
+        new $ECS.RunInstancesRequestTag({ key: WORKER_ECS_TAGS.lifecycle, value: 'ephemeral' }),
+        new $ECS.RunInstancesRequestTag({ key: WORKER_ECS_TAGS.messageId, value: messageId }),
+        new $ECS.RunInstancesRequestTag({ key: WORKER_ECS_TAGS.createdAt, value: new Date().toISOString() }),
       ]
       if (taskParams.poolProfile?.trim()) {
         tags.push(
@@ -516,15 +517,15 @@ export class ECSOrchestrator {
   }
 
   /**
-   * 查找池内空闲实例：已停止、镜像与规格与配置一致、带 mingle:lifecycle 池标签
+   * 查找池内空闲实例：已停止、镜像与规格与配置一致、带 retinaclip:lifecycle 池标签
    */
   private async findIdlePoolInstance(poolProfile?: string): Promise<string | null> {
     try {
       const tags = [
         new $ECS.DescribeInstancesRequestTag({
-          key: 'mingle:lifecycle',
-          value: this.config.ecs.poolLifecycleTagValue,
-        }),
+            key: WORKER_ECS_TAGS.lifecycle,
+            value: this.config.ecs.poolLifecycleTagValue,
+          }),
       ]
       if (poolProfile?.trim()) {
         tags.push(
@@ -729,7 +730,7 @@ export class ECSOrchestrator {
     messageId: string,
     attempt: number,
   ): Promise<Omit<TaskResult, 'durationSeconds' | 'instanceId'>> {
-    const cmd = 'cat /tmp/mingle-task-done 2>/dev/null && cat /tmp/mingle-task-result 2>/dev/null || echo "PENDING"'
+    const cmd = `cat ${WORKER_HOST_PATHS.taskDone} 2>/dev/null && cat ${WORKER_HOST_PATHS.taskResult} 2>/dev/null || echo "PENDING"`
 
     for (let i = 0; i < 24; i++) {
       const raw = await this.runRemoteCommand(instanceId, cmd)
@@ -746,7 +747,7 @@ export class ECSOrchestrator {
 
     return {
       success: false,
-      error: '任务结束后未读到 /tmp/mingle-task-done 结果',
+      error: `任务结束后未读到 ${WORKER_HOST_PATHS.taskDone} 结果`,
     }
   }
 
@@ -828,7 +829,7 @@ export class ECSOrchestrator {
         // 通过云助手检查任务完成标记
         const checkResult = await this.runRemoteCommand(
           instanceId,
-          'cat /tmp/mingle-task-done 2>/dev/null && cat /tmp/mingle-task-result 2>/dev/null || echo "PENDING"',
+          `cat ${WORKER_HOST_PATHS.taskDone} 2>/dev/null && cat ${WORKER_HOST_PATHS.taskResult} 2>/dev/null || echo "PENDING"`,
         )
 
         if (checkResult === null) {
@@ -1039,7 +1040,7 @@ export class ECSOrchestrator {
         regionId: this.config.ecs.regionId,
         tag: [
           new $ECS.DescribeInstancesRequestTag({
-            key: 'mingle:lifecycle',
+            key: WORKER_ECS_TAGS.lifecycle,
             value: 'ephemeral',
           }),
         ],

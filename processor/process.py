@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Mingle 视频处理脚本 - 容器入口点
+RetinaClip 视频处理脚本 - 容器入口点
 
 此脚本在 Docker 容器内运行，负责：
 1. 从环境变量读取任务参数

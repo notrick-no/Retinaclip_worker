@@ -20,29 +20,29 @@ ALIYUN_ECS_VSWITCH_ID=vsw-xxx
 
 # ECS 实例规格/命名（可选）
 ALIYUN_ECS_INSTANCE_TYPE=ecs.gn6i-c8g1.2xlarge
-ALIYUN_ECS_INSTANCE_NAME_PREFIX=mingle-worker
+ALIYUN_ECS_INSTANCE_NAME_PREFIX=retinaclip-worker
 
-# 运行镜像（可选；不填会用 mingle-processor:latest）
-WORKER_PROCESSING_IMAGE=mingle-processor:latest
+# 运行镜像（可选；不填会用 retinaclip-processor:latest）
+WORKER_PROCESSING_IMAGE=retinaclip-processor:latest
 
 # 按队列消息 operation + quality_preset 路由容器镜像（JSON 对象，字符串键 -> 镜像引用）
 # 查找顺序：sortedOps@quality → sortedOps → @quality → WORKER_PROCESSING_IMAGE
 # 例：消息 "operation":["remove subtitles"],"quality_preset":"normal" 对应键 "remove subtitles@normal"
-# WORKER_PROCESSING_IMAGE_MAP={"remove subtitles@normal":"registry.cn-shanghai.aliyuncs.com/ns/mingle-subtitle:normal","remove subtitles":"registry.cn-shanghai.aliyuncs.com/ns/mingle-subtitle:latest"}
+# WORKER_PROCESSING_IMAGE_MAP={"remove subtitles@normal":"registry.cn-shanghai.aliyuncs.com/ns/retinaclip-subtitle:normal","remove subtitles":"registry.cn-shanghai.aliyuncs.com/ns/retinaclip-subtitle:latest"}
 
-# 池实例第二标签 mingle:pool-profile 的值（键规则与 IMAGE_MAP 相同）
+# 池实例第二标签 retinaclip:pool-profile 的值（键规则与 IMAGE_MAP 相同）
 # WORKER_ECS_POOL_PROFILE_MAP={"remove subtitles@normal":"subtitle","upscale@high":"upscale"}
 
 # ========== 计费/并发策略（可选） ==========
 WORKER_MAX_INSTANCES=5
 WORKER_PREFETCH_COUNT=2
 
-# ECS「池」：为 true 时优先启动已停止的池实例（实例标签 mingle:lifecycle=pool，可用 WORKER_ECS_POOL_TAG_VALUE 改值）；
-# 任务结束只 Stop，不释放。池无可用时再新建临时实例（标签 mingle:lifecycle=ephemeral），任务结束 Delete。
+# ECS「池」：为 true 时优先启动已停止的池实例（实例标签 retinaclip:lifecycle=pool，可用 WORKER_ECS_POOL_TAG_VALUE 改值）；
+# 任务结束只 Stop，不释放。池无可用时再新建临时实例（标签 retinaclip:lifecycle=ephemeral），任务结束 Delete。
 WORKER_ECS_POOL_ENABLED=true
 WORKER_ECS_POOL_TAG_VALUE=pool
-# 池 profile 标签键（默认 mingle:pool-profile；与 WORKER_ECS_POOL_PROFILE_MAP 搭配）
-# WORKER_ECS_POOL_PROFILE_TAG_KEY=mingle:pool-profile
+# 池 profile 标签键（默认 retinaclip:pool-profile；与 WORKER_ECS_POOL_PROFILE_MAP 搭配）
+# WORKER_ECS_POOL_PROFILE_TAG_KEY=retinaclip:pool-profile
 
 # 主规格无库存时依次尝试的备选规格（逗号分隔，如 gn7i 无货试 gn6i）
 # ALIYUN_ECS_INSTANCE_TYPE_FALLBACK=ecs.gn6i-c8g1.2xlarge,ecs.gn5i-c4g1.xlarge

@@ -1,5 +1,5 @@
 {
-  "name": "mingle-worker",
+  "name": "retinaclip-worker",
   "private": true,
   "type": "module",
   "scripts": {
