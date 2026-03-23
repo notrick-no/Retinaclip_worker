@@ -93,9 +93,15 @@ export interface WorkerConfig {
     poolLifecycleTagValue: string
     /**
      * 池实例可选第二维标签键，用于区分业务池（如字幕 / 放大）。
-     * 值为 WORKER_ECS_POOL_PROFILE_MAP 解析结果；未设置 profile 时不按此标签过滤。
+     * 值为 WORKER_ECS_POOL_PROFILE_MAP 解析结果。
+     * 是否在挑选池实例时按此标签过滤见 poolProfileFilterEnabled。
      */
     poolProfileTagKey: string
+    /**
+     * 为 true 时 findIdlePoolInstance 会要求实例带 poolProfileTagKey=任务解析出的 profile。
+     * 为 false 时仅按 lifecycle 池标签 + 镜像/规格匹配（适合全池共用、实例可不打 profile）。
+     */
+    poolProfileFilterEnabled: boolean
     /**
      * 在 `ALIYUN_ECS_INSTANCE_TYPE` 之后依次尝试的规格（逗号分隔），用于库存不足降级。
      */
@@ -240,6 +246,7 @@ export function loadConfig(): WorkerConfig {
       poolProfileTagKey:
         env('WORKER_ECS_POOL_PROFILE_TAG_KEY', DEFAULT_POOL_PROFILE_TAG_KEY).trim() ||
         DEFAULT_POOL_PROFILE_TAG_KEY,
+      poolProfileFilterEnabled: parseBoolEnv('WORKER_ECS_POOL_PROFILE_FILTER_ENABLED', false),
       instanceTypeFallback,
       userdataDockerPolicy: parseEnumEnv<'auto' | 'require_host'>('WORKER_ECS_USERDATA_DOCKER_POLICY', {
         defaultValue: 'auto',

@@ -34,7 +34,7 @@
 | `npm run test:ecs` | 执行 `scripts/test-ecs-api.ts`：调用 `DescribeRegions`、`DescribeImages`（校验 `ALIYUN_ECS_IMAGE_ID`）。**只读**，不创建实例。 |
 | `npm run pool` | 执行 `scripts/test-ecs-pool.ts`：列出带池标签的实例、与编排器一致的「可复用 Stopped」数量、`ephemeral` 实例概况。 |
 
-**`npm run pool` 带 profile 参数**（模拟任务携带 `poolProfile`）：
+**`npm run pool` 带 profile 参数**（仅在 `.env` 中 `WORKER_ECS_POOL_PROFILE_FILTER_ENABLED=true` 时生效，与编排器一致；默认 false 时不按 profile 筛池）：
 
 ```bash
 npm run pool -- subtitle

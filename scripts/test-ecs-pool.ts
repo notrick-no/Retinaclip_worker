@@ -7,7 +7,7 @@
  *   npm run pool -- <pool_profile_tag_value>
  *   ./scripts/rc.sh p [profile]
  *
- * 第二个参数可选：模拟带 `retinaclip:pool-profile`（或 WORKER_ECS_POOL_PROFILE_TAG_KEY）的任务，查看可被 pick 的 Stopped 池实例。
+ * 第二个参数可选：在 WORKER_ECS_POOL_PROFILE_FILTER_ENABLED=true 时，模拟按 pool profile 筛选；默认 false 时 CLI 参数会被忽略（与编排器一致）。
  */
 
 import 'dotenv/config'
@@ -84,6 +84,9 @@ async function main() {
   console.log(`  WORKER_ECS_POOL_ENABLED : ${config.ecs.poolEnabled}`)
   console.log(`  池 lifecycle 标签   : ${WORKER_ECS_TAGS.lifecycle} = ${config.ecs.poolLifecycleTagValue}`)
   console.log(`  pool profile 键     : ${config.ecs.poolProfileTagKey}`)
+  console.log(
+    `  pool profile 筛选   : ${config.ecs.poolProfileFilterEnabled ? '开启（WORKER_ECS_POOL_PROFILE_FILTER_ENABLED）' : '关闭（仅 lifecycle+镜像+规格）'}`,
+  )
   console.log(`  期望 imageId        : ${config.ecs.imageId}`)
   console.log(`  期望 instanceType   : ${config.ecs.instanceType}`)
   if (poolProfileArg) {
@@ -148,7 +151,7 @@ async function main() {
       }),
     ],
   })
-  if (poolProfileArg) {
+  if (config.ecs.poolProfileFilterEnabled && poolProfileArg) {
     idleReq.tag!.push(
       new $ECS.DescribeInstancesRequestTag({
         key: config.ecs.poolProfileTagKey,
@@ -161,7 +164,12 @@ async function main() {
   const idleList = idleRes.body?.instances?.instance || []
 
   console.log('── 编排器「下一任务」可立即复用的 Stopped 池实例（与代码 findIdlePoolInstance 条件一致）──')
-  if (poolProfileArg) {
+  if (!config.ecs.poolProfileFilterEnabled) {
+    console.log('  （WORKER_ECS_POOL_PROFILE_FILTER_ENABLED=false：不按 profile 标签筛选池实例）')
+    if (poolProfileArg) {
+      console.log(`  （已忽略 CLI 参数「${poolProfileArg}」；若需模拟 profile 筛选请先设 WORKER_ECS_POOL_PROFILE_FILTER_ENABLED=true）`)
+    }
+  } else if (poolProfileArg) {
     console.log(`  （已加 profile 过滤: ${config.ecs.poolProfileTagKey}=${poolProfileArg}）`)
   } else {
     console.log('  （未加 profile 过滤；若任务带了 poolProfile，请用: npx tsx scripts/test-ecs-pool.ts <profile值>）')

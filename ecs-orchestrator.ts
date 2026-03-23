@@ -517,7 +517,8 @@ export class ECSOrchestrator {
   }
 
   /**
-   * 查找池内空闲实例：已停止、镜像与规格与配置一致、带 retinaclip:lifecycle 池标签
+   * 查找池内空闲实例：已停止、镜像与规格与配置一致、带 retinaclip:lifecycle 池标签；
+   * 若 poolProfileFilterEnabled 且任务带 poolProfile，再要求 poolProfileTagKey 匹配。
    */
   private async findIdlePoolInstance(poolProfile?: string): Promise<string | null> {
     try {
@@ -527,7 +528,7 @@ export class ECSOrchestrator {
             value: this.config.ecs.poolLifecycleTagValue,
           }),
       ]
-      if (poolProfile?.trim()) {
+      if (this.config.ecs.poolProfileFilterEnabled && poolProfile?.trim()) {
         tags.push(
           new $ECS.DescribeInstancesRequestTag({
             key: this.config.ecs.poolProfileTagKey,

@@ -35,6 +35,7 @@ describe('config.ts', () => {
       ALIYUN_ECS_VSWITCH_ID: undefined,
       WEBHOOK_SECRET: undefined,
       WORKER_PROCESSING_IMAGE_MAP: undefined,
+      WORKER_ECS_POOL_PROFILE_FILTER_ENABLED: undefined,
     })
   })
 
@@ -55,7 +56,14 @@ describe('config.ts', () => {
     expect(cfg.webhook.secret).toBe('wh-secret')
     expect(cfg.processing.defaultImage).toBe('retinaclip-processor:latest')
     expect(cfg.ecs.poolProfileTagKey).toBe('retinaclip:pool-profile')
+    expect(cfg.ecs.poolProfileFilterEnabled).toBe(false)
     expect(cfg.ecs.userdataDockerPolicy).toBe('auto')
+  })
+
+  it('WORKER_ECS_POOL_PROFILE_FILTER_ENABLED=true 时开启池 profile 筛选', () => {
+    setEnv({ WORKER_ECS_POOL_PROFILE_FILTER_ENABLED: 'true' })
+    const cfg = loadConfig()
+    expect(cfg.ecs.poolProfileFilterEnabled).toBe(true)
   })
 
   it('WORKER_PROCESSING_IMAGE_MAP 解析为对象', () => {

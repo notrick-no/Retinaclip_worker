@@ -41,6 +41,7 @@ function main() {
   console.log('  poolEnabled    ', cfg.ecs.poolEnabled)
   console.log('  poolLifecycle  ', cfg.ecs.poolLifecycleTagValue)
   console.log('  poolProfileKey ', cfg.ecs.poolProfileTagKey)
+  console.log('  poolProfileFilter', cfg.ecs.poolProfileFilterEnabled)
   console.log('  mockProcessing ', cfg.ecs.mockProcessing ?? false)
   console.log('  userdataDocker ', cfg.ecs.userdataDockerPolicy)
   console.log('  prefilterStock ', cfg.ecs.prefilterAvailableResource)
