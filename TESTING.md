@@ -59,7 +59,36 @@ npm run pool -- subtitle
 
 ---
 
-## 五、Shell 快捷脚本 `scripts/rc.sh`
+## 六、调度器侧端到端测试（推荐：不手动登录池机）
+
+该脚本会在调度器上直接调用 `ECSOrchestrator.runTask()`：
+- 调度器分配任务到池机（优先复用池）
+- 池机内执行：NAS 自动挂载 `/mnt`、`docker pull`、`docker run`、写入结果文件
+- 调度器侧拿到 `TaskResult` 并打印成功/失败信息（失败时会给出错误原因）
+
+脚本：
+- `scripts/test-scheduler-run-pool-task.ts`
+
+用法（需要你提供“可访问的视频地址 + webhook 地址 + 目标镜像”）：
+```bash
+npx tsx scripts/test-scheduler-run-pool-task.ts \
+  --videoDownloadUrl http://... \
+  --webhookUrl http://... \
+  --processingImage 172.16.0.70:5000/quzimu-app:v3
+```
+
+可选指定 poolProfile（仅当你启用了 profile 筛池时才可能生效）：
+```bash
+npx tsx scripts/test-scheduler-run-pool-task.ts \
+  --videoDownloadUrl http://... \
+  --webhookUrl http://... \
+  --processingImage 172.16.0.70:5000/quzimu-app:v3 \
+  --poolProfile subtitle
+```
+
+---
+
+## 七、Shell 快捷脚本 `scripts/rc.sh`
 
 适合不想敲 `npm run` 时（需可执行：`chmod +x scripts/rc.sh`）。
 
