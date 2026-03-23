@@ -38,6 +38,69 @@ echo "[$(date -Iseconds)] RetinaClip 宿主机日志: $LOG_FILE"
 }
 
 /**
+ * 自动挂载 NAS（NFS）。
+ *
+ * 约定（按用户需求固定）：
+ * - 导出路径：/
+ * - 本地挂载目录：/mnt
+ * - NAS ID：3e41f4bcd1（仅用于日志定位）
+ * - 挂载点域名：worker 的域名（优先 $WORKER_NAS_MOUNT_DOMAIN，否则取 hostname -f）
+ */
+function shellNasAutoMountSnippet(): string {
+  return `
+# ---------------------------------------------------------
+# NAS 自动挂载（NFS）
+# ---------------------------------------------------------
+NAS_ID='3e41f4bcd1'
+NAS_EXPORT_PATH='/'
+NAS_MOUNT_POINT='/mnt'
+NAS_SERVER="\${WORKER_NAS_MOUNT_DOMAIN:-$(hostname -f 2>/dev/null || hostname)}"
+
+echo "[$(date -Iseconds)] NAS auto-mount start: id=$NAS_ID server=$NAS_SERVER export=$NAS_EXPORT_PATH -> $NAS_MOUNT_POINT"
+
+if [ -z "$NAS_SERVER" ]; then
+  echo "[$(date -Iseconds)] ERROR: NAS server（挂载点域名）为空，无法挂载"
+  exit 1
+fi
+
+mkdir -p "$NAS_MOUNT_POINT"
+
+# 1) 安装 NFS 客户端（mount.nfs）
+if ! command -v mount.nfs >/dev/null 2>&1; then
+  echo "[$(date -Iseconds)] 未检测到 nfs client（mount.nfs），开始安装 nfs-utils..."
+  if command -v dnf >/dev/null 2>&1; then
+    dnf -y install nfs-utils || true
+  elif command -v yum >/dev/null 2>&1; then
+    yum -y install nfs-utils || true
+  fi
+fi
+
+if ! command -v mount.nfs >/dev/null 2>&1; then
+  echo "[$(date -Iseconds)] ERROR: nfs-utils 安装失败或 mount.nfs 不可用"
+  exit 1
+fi
+
+# 2) 写入 /etc/fstab（避免重启后丢失；server 基于 worker 域名推导）
+FSTAB_LINE="$NAS_SERVER:$NAS_EXPORT_PATH $NAS_MOUNT_POINT nfs4 _netdev,nofail,vers=4.0,soft,timeo=600,retrans=2 0 0"
+if ! grep -qF "$NAS_SERVER:$NAS_EXPORT_PATH $NAS_MOUNT_POINT nfs4" /etc/fstab 2>/dev/null; then
+  echo "$FSTAB_LINE" >> /etc/fstab
+fi
+
+# 3) 挂载
+if grep -qE "[[:space:]]$NAS_MOUNT_POINT[[:space:]]" /proc/mounts 2>/dev/null; then
+  echo "[$(date -Iseconds)] NAS 已挂载：$NAS_MOUNT_POINT"
+else
+  echo "[$(date -Iseconds)] 尝试挂载 NAS..."
+  if ! mount -a; then
+    mount -t nfs4 -o _netdev,vers=4.0,soft,timeo=600,retrans=2 "$NAS_SERVER:$NAS_EXPORT_PATH" "$NAS_MOUNT_POINT" || exit 1
+  fi
+fi
+
+df -h "$NAS_MOUNT_POINT" 2>/dev/null || true
+`.trim()
+}
+
+/**
  * 从内网镜像名 `host:port/repo:tag` 提取 registry，并与配置的列表合并（去重）。
  * 用于写入 Docker `insecure-registries`（HTTP 私有仓）。
  */
@@ -135,6 +198,8 @@ RESULT_FILE="${H.taskResult}"
 DONE_FILE="${H.taskDone}"
 
 ${shellSelectWorkerLogSnippet()}
+
+${shellNasAutoMountSnippet()}
 
 echo "[$(date -Iseconds)] ===== RetinaClip Worker Mock 启动 ====="
 echo "[$(date -Iseconds)] 任务 ID: ${task.messageId}"
@@ -321,6 +386,8 @@ RESULT_FILE="${H.taskResult}"
 DONE_FILE="${H.taskDone}"
 
 ${shellSelectWorkerLogSnippet()}
+
+${shellNasAutoMountSnippet()}
 
 echo "[$(date -Iseconds)] ===== RetinaClip Worker 启动 ====="
 echo "[$(date -Iseconds)] 任务 ID: ${task.messageId}"

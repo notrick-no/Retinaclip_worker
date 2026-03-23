@@ -49,6 +49,14 @@ npm run pool -- subtitle
 | `npm run test:smoke` | 依次：`test:config` → `test:rabbitmq` → `test:ecs`。快速确认「配置 + MQ + ECS API」是否正常。 |
 | `npm run test:all` | 依次：`test:config` → `test:unit` → `test:smoke` → `pool`。本地/CI 全量自检（**最后一步会查 ECS 实例列表**，需有效 AK 与网络）。 |
 
+## 五、池机手动测试脚本
+
+- NAS 挂载 + 私有 Docker 仓库拉取/启动测试（只用于宿主机排障）：
+  - `./scripts/test-nas-docker.sh`
+  - 若你希望挂载点域名不要依赖 `hostname -f`，可先导出 `WORKER_NAS_MOUNT_DOMAIN` 再运行。
+
+> 说明：该脚本不会触碰 ECS/池，仅在你运行它的宿主机上完成 NAS 挂载、`docker pull` 和 `docker run`。因此也可以在“调度器服务器”上使用来验证 registry/NAS/容器启动是否正常。
+
 ---
 
 ## 五、Shell 快捷脚本 `scripts/rc.sh`
