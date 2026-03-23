@@ -64,6 +64,8 @@ def send_progress(webhook_url: str, message_id: str, stage: str,
     webhook_secret = os.environ.get("WEBHOOK_SECRET", "")
     payload = {
         "job_id": message_id,
+        "queue_job_id": message_id,
+        "queueJobId": message_id,
         "user_id": user_id,
         "status": stage.upper(),
         "event_type": event_type,
@@ -71,8 +73,8 @@ def send_progress(webhook_url: str, message_id: str, stage: str,
         "progress_percentage": percentage,
         "progress_message": message,
     }
-
-    payload_str = json.dumps(payload)
+    payload = {k: v for k, v in payload.items() if v is not None}
+    payload_str = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     import hmac
     signature = "sha256=" + hmac.new(
         webhook_secret.encode(), payload_str.encode(), hashlib.sha256

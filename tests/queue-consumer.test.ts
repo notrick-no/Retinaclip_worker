@@ -70,6 +70,11 @@ describe('queue-consumer.ts', () => {
     }
 
     const config: any = {
+      processing: {
+        defaultImage: 'mingle-processor:latest',
+        imageMap: {},
+        poolProfileMap: {},
+      },
       rabbitmq: {
         url: 'amqp://x',
         queue: 'media.uploaded',
@@ -96,6 +101,12 @@ describe('queue-consumer.ts', () => {
         instanceStartTimeout: 5 * 60 * 1000,
         pollInterval: 1000,
         mockProcessing: true,
+        poolEnabled: false,
+        poolLifecycleTagValue: 'pool',
+        poolProfileTagKey: 'mingle:pool-profile',
+        instanceTypeFallback: [],
+        userdataDockerPolicy: 'auto',
+        prefilterAvailableResource: false,
       },
       webhook: {
         secret: 'wh-secret',
@@ -177,6 +188,11 @@ describe('queue-consumer.ts', () => {
     }
 
     const config: any = {
+      processing: {
+        defaultImage: 'mingle-processor:latest',
+        imageMap: {},
+        poolProfileMap: {},
+      },
       rabbitmq: {
         url: 'amqp://x',
         queue: 'media.uploaded',
@@ -203,6 +219,12 @@ describe('queue-consumer.ts', () => {
         instanceStartTimeout: 5 * 60 * 1000,
         pollInterval: 1000,
         mockProcessing: true,
+        poolEnabled: false,
+        poolLifecycleTagValue: 'pool',
+        poolProfileTagKey: 'mingle:pool-profile',
+        instanceTypeFallback: [],
+        userdataDockerPolicy: 'auto',
+        prefilterAvailableResource: false,
       },
       webhook: {
         secret: 'wh-secret',

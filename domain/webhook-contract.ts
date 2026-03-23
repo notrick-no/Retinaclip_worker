@@ -18,6 +18,7 @@ export type WebhookEventType =
   | 'retrying'
 
 export interface WebhookPayload {
+  /** RabbitMQ 消息的 message_id，与 Prisma VideoProcessJob.queueJobId 对应 */
   job_id: string
   user_id?: string
   status: string

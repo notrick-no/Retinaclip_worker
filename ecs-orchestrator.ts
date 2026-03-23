@@ -5,10 +5,12 @@
  * ║                ECS 实例生命周期管理策略                       ║
  * ╠══════════════════════════════════════════════════════════════╣
  * ║                                                              ║
- * ║  1. 按需创建 (On-Demand)                                     ║
- * ║     - 收到 RabbitMQ 消息时，创建 ECS 抢占式实例               ║
- * ║     - 通过信号量控制并发数（不超过 MAX_INSTANCES）             ║
- * ║     - 任务完成后立即释放实例                                  ║
+ * ║  1. 池 + 按需扩容                                            ║
+ * ║     - 可选：优先复用带 mingle:lifecycle=pool 的已停止实例      ║
+ * ║       任务结束仅 Stop，保留在池                               ║
+ * ║     - 池无可用时 RunInstances 新建（标签 ephemeral）          ║
+ * ║       任务结束 DeleteInstance 释放                            ║
+ * ║     - 并发上限：MAX_INSTANCES                                  ║
  * ║                                                              ║
  * ║  2. 抢占式实例 (Spot Instance)                                ║
  * ║     - 使用 SpotAsPriceGo 自动竞价，按市场价付费               ║
@@ -32,11 +34,20 @@ import ECS20140526, * as $ECS from '@alicloud/ecs20140526'
 import OpenApi, * as $OpenApi from '@alicloud/openapi-client'
 import * as $Util from '@alicloud/tea-util'
 import { WorkerConfig } from './config'
-import { generateUserData } from './cloud-init'
+import { generateTaskRunnerShellScript, generateUserData } from './cloud-init'
 import type { TaskParams } from './domain/task'
 import { createLogger } from './logger'
 
 const log = createLogger('ECS')
+
+/** 库存或可用区不支持时换规格 / 抢占式改按量 */
+function isStockOrZoneInstanceError(code: string): boolean {
+  return (
+    code === 'OperationDenied.NoStock' ||
+    code === 'Zone.NotOnSale' ||
+    code === 'InvalidInstanceType.ZoneNotSupported'
+  )
+}
 
 /** ECS 实例运行上下文 */
 export interface InstanceContext {
@@ -46,6 +57,8 @@ export interface InstanceContext {
   messageId: string
   /** 创建时间戳 */
   createdAt: number
+  /** 任务结束后：池内实例仅停机；临时实例释放删除 */
+  disposeMode: 'stop' | 'delete'
   /** 超时定时器 */
   timeoutTimer?: NodeJS.Timeout
   /** 轮询定时器 */
@@ -158,11 +171,11 @@ export class ECSOrchestrator {
   }
 
   /**
-   * 核心方法：为一个任务创建 ECS 实例并等待完成
-   * 
-   * 完整流程：
-   *   获取槽位 → 创建实例 → 等待启动 → 轮询任务状态
-   *   → 收集结果 → 释放实例 → 释放槽位
+   * 核心方法：为一个任务分配 ECS 并等待完成
+   *
+   * 流程：
+   *   获取槽位 →（可选）池内已停止实例 Start + 云助手跑任务脚本
+   *   或 RunInstances + UserData → 等待任务完成 → 池：Stop / 临时：Delete → 释放槽位
    */
   async runTask(
     taskParams: TaskParams,
@@ -182,29 +195,72 @@ export class ECSOrchestrator {
 
     const startTime = Date.now()
     let instanceId: string | null = null
+    let disposeMode: 'stop' | 'delete' = 'delete'
 
     try {
-      // 2. 生成 UserData（Cloud-Init 启动脚本）
-      const userData = generateUserData(taskParams, this.config, processingImage)
+      // 池内机器规格与配置主规格一致；GPU 标志与主规格对齐
+      const taskScript = generateTaskRunnerShellScript(
+        taskParams,
+        this.config,
+        processingImage,
+        this.config.ecs.instanceType,
+      )
 
-      // 3. 创建 ECS 实例
-      instanceId = await this.createInstance(taskParams.messageId, userData, attempt)
+      // 2. 优先复用池内已停止实例（任务结束只 Stop，不释放）
+      if (this.config.ecs.poolEnabled) {
+        const poolId = await this.findIdlePoolInstance(taskParams.poolProfile)
+        if (poolId) {
+          instanceId = poolId
+          disposeMode = 'stop'
+          log.info('复用池内 ECS（Stopped → Running）', {
+            instanceId,
+            messageId: taskParams.messageId,
+            tag: `mingle:lifecycle=${this.config.ecs.poolLifecycleTagValue}`,
+            poolProfile: taskParams.poolProfile,
+          })
 
-      // 4. 注册运行中的实例
-      const context: InstanceContext = {
+          this.runningInstances.set(instanceId, {
+            instanceId,
+            messageId: taskParams.messageId,
+            createdAt: startTime,
+            disposeMode: 'stop',
+          })
+
+          await this.startInstance(instanceId)
+          await this.waitForInstanceRunning(instanceId, taskParams.messageId, attempt)
+
+          // 云助手就绪需要短暂时间
+          await this.sleep(20000)
+          await this.runRemoteCommand(
+            instanceId,
+            'rm -f /tmp/mingle-task-done /tmp/mingle-task-result',
+          )
+
+          await this.runRemoteLongRunningScript(instanceId, taskScript, taskParams.messageId, attempt)
+
+          const result = await this.readTaskResultWithRetries(instanceId, taskParams.messageId, attempt)
+          const durationSeconds = (Date.now() - startTime) / 1000
+          return {
+            ...result,
+            durationSeconds,
+            instanceId,
+          }
+        }
+      }
+
+      // 3. 池无可用或关闭池：新建临时实例（任务结束 Delete）
+      instanceId = await this.createInstance(taskParams, processingImage, attempt)
+      disposeMode = 'delete'
+
+      this.runningInstances.set(instanceId, {
         instanceId,
         messageId: taskParams.messageId,
         createdAt: startTime,
-      }
-      this.runningInstances.set(instanceId, context)
+        disposeMode: 'delete',
+      })
 
-      // 5. RunInstances 创建的实例会自动启动，无需再调 StartInstance（否则会 403）
-      // 6. 等待实例进入 Running 状态
       await this.waitForInstanceRunning(instanceId, taskParams.messageId, attempt)
-
-      // 7. 等待任务完成（轮询实例上的完成标记）
       const result = await this.waitForTaskCompletion(instanceId, taskParams.messageId, attempt)
-
       const durationSeconds = (Date.now() - startTime) / 1000
 
       return {
@@ -212,7 +268,6 @@ export class ECSOrchestrator {
         durationSeconds,
         instanceId,
       }
-
     } catch (error) {
       const durationSeconds = (Date.now() - startTime) / 1000
 
@@ -223,9 +278,8 @@ export class ECSOrchestrator {
         instanceId: instanceId || 'N/A',
       }
     } finally {
-      // 8. 释放实例 + 释放槽位
       if (instanceId) {
-        await this.releaseInstance(instanceId, taskParams.messageId, attempt)
+        await this.disposeAfterTask(instanceId, taskParams.messageId, disposeMode, attempt)
         this.runningInstances.delete(instanceId)
       }
       this.activeSlots--
@@ -237,92 +291,206 @@ export class ECSOrchestrator {
   }
 
   /**
-   * 创建 ECS 抢占式实例
+   * 创建 ECS 实例：主规格 + ALIYUN_ECS_INSTANCE_TYPE_FALLBACK 降级；
+   * 抢占式下同一规格先 Spot 再按量；库存/可用区类错误尝试下一规格。
    */
   private async createInstance(
-    messageId: string,
-    userData: string,
+    taskParams: TaskParams,
+    processingImage: string,
     attempt: number,
   ): Promise<string> {
-    log.info('正在创建 ECS 实例...', {
-      messageId,
-      attempt,
-      instanceType: this.config.ecs.instanceType,
-      spot: this.config.ecs.useSpotInstance,
-    })
-
+    const messageId = taskParams.messageId
     const instanceName = `${this.config.ecs.instanceNamePrefix}-${messageId.substring(0, 8)}`
-
-    const request = new $ECS.RunInstancesRequest({
-      regionId: this.config.ecs.regionId,
-      imageId: this.config.ecs.imageId,
-      instanceType: this.config.ecs.instanceType,
-      securityGroupId: this.config.ecs.securityGroupId,
-      vSwitchId: this.config.ecs.vswitchId,
-      instanceName,
-      hostName: instanceName,
-      // 系统盘
-      systemDiskSize: String(this.config.ecs.systemDiskSize),
-      systemDiskCategory: this.config.ecs.systemDiskCategory,
-      // 公网
-      internetMaxBandwidthOut: this.config.ecs.internetMaxBandwidthOut,
-      internetChargeType: 'PayByTraffic',
-      // 按量付费 + 抢占式
-      instanceChargeType: 'PostPaid',
-      ...(this.config.ecs.useSpotInstance && {
-        spotStrategy: this.config.ecs.spotStrategy,
-        ...(this.config.ecs.spotPriceLimit && {
-          spotPriceLimit: this.config.ecs.spotPriceLimit,
-        }),
-        // 抢占式实例中断后的操作：释放
-        spotInterruptionBehavior: 'Terminate',
-      }),
-      // Cloud-Init 用户数据
-      userData,
-      // 可用区
-      ...(this.config.ecs.zoneId && { zoneId: this.config.ecs.zoneId }),
-      // 密钥对（调试用）
-      ...(this.config.ecs.keyPairName && { keyPairName: this.config.ecs.keyPairName }),
-      // RAM 角色
-      ...(this.config.ecs.ramRoleName && { ramRoleName: this.config.ecs.ramRoleName }),
-      // 实例数量
-      amount: 1,
-      // 标签（用于识别 worker 实例）
-      tag: [
-        new $ECS.RunInstancesRequestTag({ key: 'mingle:role', value: 'worker' }),
-        new $ECS.RunInstancesRequestTag({ key: 'mingle:message-id', value: messageId }),
-        new $ECS.RunInstancesRequestTag({ key: 'mingle:created-at', value: new Date().toISOString() }),
-      ],
-    })
-
     const runtime = new $Util.RuntimeOptions({})
 
-    try {
+    const primary = this.config.ecs.instanceType
+    const fallbacks = this.config.ecs.instanceTypeFallback || []
+    const candidateTypes = [...new Set([primary, ...fallbacks].filter(Boolean))]
+
+    let orderedTypes = candidateTypes
+    if (this.config.ecs.prefilterAvailableResource && candidateTypes.length > 1) {
+      try {
+        orderedTypes = await this.rankInstanceTypesByAvailability(candidateTypes)
+        log.info('DescribeAvailableResource 已调整规格尝试顺序', { orderedTypes })
+      } catch (e: any) {
+        log.warn('DescribeAvailableResource 预排序失败，使用配置顺序', { error: e?.message || String(e) })
+      }
+    }
+
+    const buildTags = () => {
+      const tags = [
+        new $ECS.RunInstancesRequestTag({ key: 'mingle:role', value: 'worker' }),
+        new $ECS.RunInstancesRequestTag({ key: 'mingle:lifecycle', value: 'ephemeral' }),
+        new $ECS.RunInstancesRequestTag({ key: 'mingle:message-id', value: messageId }),
+        new $ECS.RunInstancesRequestTag({ key: 'mingle:created-at', value: new Date().toISOString() }),
+      ]
+      if (taskParams.poolProfile?.trim()) {
+        tags.push(
+          new $ECS.RunInstancesRequestTag({
+            key: this.config.ecs.poolProfileTagKey,
+            value: taskParams.poolProfile.trim(),
+          }),
+        )
+      }
+      return tags
+    }
+
+    const runOnce = async (instanceType: string, useSpot: boolean): Promise<string> => {
+      const userData = generateUserData(taskParams, this.config, processingImage, instanceType)
+      const request = new $ECS.RunInstancesRequest({
+        regionId: this.config.ecs.regionId,
+        imageId: this.config.ecs.imageId,
+        instanceType,
+        securityGroupId: this.config.ecs.securityGroupId,
+        vSwitchId: this.config.ecs.vswitchId,
+        instanceName,
+        hostName: instanceName,
+        systemDiskSize: String(this.config.ecs.systemDiskSize),
+        systemDiskCategory: this.config.ecs.systemDiskCategory,
+        internetMaxBandwidthOut: this.config.ecs.internetMaxBandwidthOut,
+        internetChargeType: 'PayByTraffic',
+        instanceChargeType: 'PostPaid',
+        userData,
+        ...(this.config.ecs.zoneId && { zoneId: this.config.ecs.zoneId }),
+        ...(this.config.ecs.keyPairName && { keyPairName: this.config.ecs.keyPairName }),
+        ...(this.config.ecs.ramRoleName && { ramRoleName: this.config.ecs.ramRoleName }),
+        amount: 1,
+        tag: buildTags(),
+        ...(useSpot && {
+          spotStrategy: this.config.ecs.spotStrategy,
+          ...(this.config.ecs.spotPriceLimit && {
+            spotPriceLimit: this.config.ecs.spotPriceLimit,
+          }),
+          spotInterruptionBehavior: 'Terminate',
+        }),
+      })
+
       const response = await this.client.runInstancesWithOptions(request, runtime)
       const instanceIds = response.body?.instanceIdSets?.instanceIdSet || []
-
       if (instanceIds.length === 0) {
         throw new Error('创建实例成功但未返回实例 ID')
       }
-
       const instanceId = instanceIds[0]
-      log.info('ECS 实例创建成功', { instanceId, messageId })
+      log.info('ECS 实例创建成功', {
+        instanceId,
+        messageId,
+        attempt,
+        instanceType,
+        spot: useSpot,
+      })
       return instanceId
-
-    } catch (error: any) {
-      const errorCode = error.code || error.Code || ''
-      const errorMsg = error.message || error.Message || String(error)
-
-      // 处理常见错误
-      if (errorCode === 'OperationDenied.NoStock') {
-        throw new Error(`实例规格 ${this.config.ecs.instanceType} 在 ${this.config.ecs.zoneId || this.config.ecs.regionId} 库存不足`)
-      }
-      if (errorCode === 'InvalidSpotPriceLimit.LowerThanPublicPrice') {
-        throw new Error('抢占式实例出价低于市场价')
-      }
-
-      throw new Error(`创建 ECS 实例失败: [${errorCode}] ${errorMsg}`)
     }
+
+    let lastError = ''
+
+    for (const instanceType of orderedTypes) {
+      log.info('正在创建 ECS 实例...', {
+        messageId,
+        attempt,
+        instanceType,
+        spot: this.config.ecs.useSpotInstance,
+      })
+
+      const trySpotThenOndemand = async (): Promise<string | null> => {
+        if (this.config.ecs.useSpotInstance) {
+          try {
+            return await runOnce(instanceType, true)
+          } catch (error: any) {
+            const code = error.code || error.Code || ''
+            const msg = error.message || error.Message || String(error)
+            if (code === 'InvalidSpotPriceLimit.LowerThanPublicPrice') {
+              throw new Error('抢占式实例出价低于市场价')
+            }
+            if (!isStockOrZoneInstanceError(code)) {
+              throw new Error(`创建 ECS 实例失败: [${code}] ${msg}`)
+            }
+            log.warn('抢占式创建失败，尝试同规格按量', { instanceType, code, msg })
+            try {
+              return await runOnce(instanceType, false)
+            } catch (error2: any) {
+              const c2 = error2.code || error2.Code || ''
+              const m2 = error2.message || error2.Message || String(error2)
+              lastError = `[${c2}] ${m2}`
+              if (isStockOrZoneInstanceError(c2)) return null
+              if (c2 === 'InvalidSpotPriceLimit.LowerThanPublicPrice') {
+                throw new Error('抢占式实例出价低于市场价')
+              }
+              throw new Error(`创建 ECS 实例失败: [${c2}] ${m2}`)
+            }
+          }
+        } else {
+          try {
+            return await runOnce(instanceType, false)
+          } catch (error: any) {
+            const code = error.code || error.Code || ''
+            const msg = error.message || error.Message || String(error)
+            lastError = `[${code}] ${msg}`
+            if (isStockOrZoneInstanceError(code)) return null
+            throw new Error(`创建 ECS 实例失败: [${code}] ${msg}`)
+          }
+        }
+      }
+
+      const id = await trySpotThenOndemand()
+      if (id) return id
+      log.warn('该规格无库存或不可用，尝试下一备选规格', { instanceType, lastError })
+    }
+
+    throw new Error(
+      `所有备选规格均创建失败（已试: ${orderedTypes.join(', ')}）。最后错误: ${lastError || 'unknown'}`,
+    )
+  }
+
+  /**
+   * 按 DescribeAvailableResource 推断的库存优先级排序（分高在前）。
+   */
+  private async rankInstanceTypesByAvailability(types: string[]): Promise<string[]> {
+    const runtime = new $Util.RuntimeOptions({})
+    const scored: { t: string; score: number }[] = []
+
+    for (const t of types) {
+      let score = 0
+      try {
+        const req = new $ECS.DescribeAvailableResourceRequest({
+          regionId: this.config.ecs.regionId,
+          destinationResource: 'InstanceType',
+          instanceType: t,
+          systemDiskCategory: this.config.ecs.systemDiskCategory,
+          ...(this.config.ecs.zoneId && { zoneId: this.config.ecs.zoneId }),
+        })
+        const res = await this.client.describeAvailableResourceWithOptions(req, runtime)
+        score = this.scoreInstanceTypeAvailability(res, t)
+      } catch {
+        score = 0
+      }
+      scored.push({ t, score })
+    }
+
+    scored.sort((a, b) => b.score - a.score)
+    return scored.map((s) => s.t)
+  }
+
+  /** 解析 DescribeAvailableResource 响应，返回 0–3 的库存优先级分 */
+  private scoreInstanceTypeAvailability(res: any, instanceType: string): number {
+    const zones = res.body?.availableZones?.availableZone || []
+    let best = 0
+    for (const z of zones) {
+      if (this.config.ecs.zoneId && z.zoneId && z.zoneId !== this.config.ecs.zoneId) continue
+      const ars = z.availableResources?.availableResource || []
+      for (const ar of ars) {
+        if (ar.type !== 'InstanceType') continue
+        const srs = ar.supportedResources?.supportedResource || []
+        for (const sr of srs) {
+          if (sr.value !== instanceType) continue
+          const cat = sr.statusCategory || ''
+          const st = sr.status || ''
+          if (cat === 'WithStock' || st === 'Available') best = Math.max(best, 3)
+          else if (cat === 'ClosedWithStock') best = Math.max(best, 2)
+          else if (cat === 'WithoutStock') best = Math.max(best, 1)
+        }
+      }
+    }
+    return best
   }
 
   /**
@@ -344,6 +512,241 @@ export class ECSOrchestrator {
         return
       }
       throw new Error(`启动实例失败: ${error.message || error}`)
+    }
+  }
+
+  /**
+   * 查找池内空闲实例：已停止、镜像与规格与配置一致、带 mingle:lifecycle 池标签
+   */
+  private async findIdlePoolInstance(poolProfile?: string): Promise<string | null> {
+    try {
+      const tags = [
+        new $ECS.DescribeInstancesRequestTag({
+          key: 'mingle:lifecycle',
+          value: this.config.ecs.poolLifecycleTagValue,
+        }),
+      ]
+      if (poolProfile?.trim()) {
+        tags.push(
+          new $ECS.DescribeInstancesRequestTag({
+            key: this.config.ecs.poolProfileTagKey,
+            value: poolProfile.trim(),
+          }),
+        )
+      }
+
+      const request = new $ECS.DescribeInstancesRequest({
+        regionId: this.config.ecs.regionId,
+        imageId: this.config.ecs.imageId,
+        instanceType: this.config.ecs.instanceType,
+        status: 'Stopped',
+        pageSize: 50,
+        tag: tags,
+      })
+      const runtime = new $Util.RuntimeOptions({})
+      const response = await this.client.describeInstancesWithOptions(request, runtime)
+      const instances = response.body?.instances?.instance || []
+      const first = instances.find((i: any) => i.instanceId)
+      return first?.instanceId ?? null
+    } catch (error: any) {
+      log.warn('查询池内实例失败', { error: error.message || String(error) })
+      return null
+    }
+  }
+
+  /**
+   * 池内实例任务结束后停机（保留实例与系统盘，供下次 Start）
+   */
+  private async stopInstanceAndWait(instanceId: string, messageId: string): Promise<void> {
+    log.info('池内实例任务结束，执行 Stop（不释放）', { instanceId, messageId })
+
+    const request = new $ECS.StopInstanceRequest({
+      instanceId,
+      forceStop: false,
+    })
+    const runtime = new $Util.RuntimeOptions({})
+
+    try {
+      await this.client.stopInstanceWithOptions(request, runtime)
+    } catch (error: any) {
+      if (error.code === 'IncorrectInstanceStatus' && error.message?.includes('Stopped')) {
+        log.info('实例已处于 Stopped', { instanceId })
+        return
+      }
+      log.error('停止实例失败', error, { instanceId, messageId })
+      return
+    }
+
+    const deadline = Date.now() + 180000
+    while (Date.now() < deadline) {
+      const status = await this.getInstanceStatus(instanceId)
+      if (status === 'Stopped') {
+        log.info('实例已停止', { instanceId })
+        return
+      }
+      await this.sleep(3000)
+    }
+    log.warn('等待实例停止超时', { instanceId })
+  }
+
+  /**
+   * 任务结束后：池 → Stop；临时扩容 → Delete
+   */
+  private async disposeAfterTask(
+    instanceId: string,
+    messageId: string,
+    mode: 'stop' | 'delete',
+    attempt: number = 0,
+  ): Promise<void> {
+    if (mode === 'stop') {
+      await this.stopInstanceAndWait(instanceId, messageId)
+    } else {
+      await this.releaseInstance(instanceId, messageId, attempt)
+    }
+    const ctx = this.runningInstances.get(instanceId)
+    if (ctx?.timeoutTimer) clearTimeout(ctx.timeoutTimer)
+    if (ctx?.pollTimer) clearInterval(ctx.pollTimer)
+  }
+
+  /**
+   * 云助手执行完整任务脚本（与 UserData 同源）。超时上限与阿里云 RunCommand 一致取较小值。
+   */
+  private async runRemoteLongRunningScript(
+    instanceId: string,
+    commandContent: string,
+    messageId: string,
+    attempt: number,
+  ): Promise<void> {
+    const timeoutSec = Math.min(
+      36000,
+      Math.max(120, Math.ceil(this.config.ecs.taskTimeout / 1000) + 900),
+    )
+
+    log.info('通过云助手执行宿主机任务脚本', {
+      instanceId,
+      messageId,
+      attempt,
+      timeoutSec,
+    })
+
+    const runRequest = new $ECS.RunCommandRequest({
+      regionId: this.config.ecs.regionId,
+      type: 'RunShellScript',
+      commandContent,
+      instanceId: [instanceId],
+      timeout: timeoutSec,
+    })
+    const runtime = new $Util.RuntimeOptions({})
+
+    const runResponse = await this.client.runCommandWithOptions(runRequest, runtime)
+    const invokeId = runResponse.body?.invokeId
+    if (!invokeId) {
+      throw new Error('云助手未返回 invokeId')
+    }
+
+    const wallDeadline = Date.now() + this.config.ecs.taskTimeout + 180000
+
+    while (Date.now() < wallDeadline) {
+      await this.sleep(5000)
+
+      const resultRequest = new $ECS.DescribeInvocationResultsRequest({
+        regionId: this.config.ecs.regionId,
+        invokeId,
+      })
+
+      const resultResponse = await this.client.describeInvocationResultsWithOptions(resultRequest, runtime)
+      const results = resultResponse.body?.invocation?.invocationResults?.invocationResult || []
+
+      if (results.length === 0) continue
+
+      const result = results[0]
+      const invokeStatus = result.invokeRecordStatus
+
+      if (invokeStatus === 'Finished') {
+        log.info('宿主机任务脚本执行结束（云助手）', { instanceId, messageId })
+        return
+      }
+      if (invokeStatus === 'Failed' || invokeStatus === 'Timeout') {
+        const out = result.output ? Buffer.from(result.output, 'base64').toString('utf-8') : ''
+        throw new Error(`云助手执行任务脚本失败: ${invokeStatus}${out ? ` — ${out.slice(-500)}` : ''}`)
+      }
+    }
+
+    throw new Error('云助手执行超时（任务脚本未在预期时间内结束）')
+  }
+
+  /**
+   * 解析云助手上 cat 完成标记文件的输出
+   */
+  private parseTaskCheckOutput(
+    checkResult: string | null,
+  ): Omit<TaskResult, 'durationSeconds' | 'instanceId'> | 'PENDING' | null {
+    if (checkResult === null) return null
+
+    const lines = checkResult.trim().split('\n')
+    const doneStatus = lines[0]?.trim()
+
+    if (doneStatus === 'SUCCESS') {
+      const resultJson = lines.slice(1).join('\n').trim()
+      try {
+        const result = JSON.parse(resultJson)
+        return {
+          success: true,
+          outputVideoUrl: result.output_video_url,
+        }
+      } catch {
+        return {
+          success: true,
+          outputVideoUrl: resultJson,
+        }
+      }
+    }
+
+    if (doneStatus === 'FAILED') {
+      const resultJson = lines.slice(1).join('\n').trim()
+      let errorMsg = '任务处理失败'
+      try {
+        const result = JSON.parse(resultJson)
+        errorMsg = result.error || errorMsg
+      } catch {
+        // ignore
+      }
+      return {
+        success: false,
+        error: errorMsg,
+      }
+    }
+
+    if (checkResult.includes('PENDING') || doneStatus === '' || !doneStatus) {
+      return 'PENDING'
+    }
+
+    return 'PENDING'
+  }
+
+  private async readTaskResultWithRetries(
+    instanceId: string,
+    messageId: string,
+    attempt: number,
+  ): Promise<Omit<TaskResult, 'durationSeconds' | 'instanceId'>> {
+    const cmd = 'cat /tmp/mingle-task-done 2>/dev/null && cat /tmp/mingle-task-result 2>/dev/null || echo "PENDING"'
+
+    for (let i = 0; i < 24; i++) {
+      const raw = await this.runRemoteCommand(instanceId, cmd)
+      const parsed = this.parseTaskCheckOutput(raw)
+
+      if (parsed === null || parsed === 'PENDING') {
+        log.debug('等待任务结果文件…', { instanceId, messageId, attempt, round: i + 1 })
+        await this.sleep(5000)
+        continue
+      }
+
+      return parsed
+    }
+
+    return {
+      success: false,
+      error: '任务结束后未读到 /tmp/mingle-task-done 结果',
     }
   }
 
@@ -425,7 +828,7 @@ export class ECSOrchestrator {
         // 通过云助手检查任务完成标记
         const checkResult = await this.runRemoteCommand(
           instanceId,
-          'cat /tmp/mingle-task-done 2>/dev/null && cat /tmp/mingle-task-result 2>/dev/null || echo "PENDING"'
+          'cat /tmp/mingle-task-done 2>/dev/null && cat /tmp/mingle-task-result 2>/dev/null || echo "PENDING"',
         )
 
         if (checkResult === null) {
@@ -435,45 +838,25 @@ export class ECSOrchestrator {
           continue
         }
 
-        const lines = checkResult.trim().split('\n')
-        const doneStatus = lines[0]?.trim()
-
-        if (doneStatus === 'SUCCESS') {
-          // 任务成功
-          const resultJson = lines.slice(1).join('\n').trim()
-          try {
-            const result = JSON.parse(resultJson)
-            log.info('任务处理成功', { instanceId, messageId, attempt })
-            return {
-              success: true,
-              outputVideoUrl: result.output_video_url,
-            }
-          } catch {
-            log.warn('结果 JSON 解析失败', { instanceId, resultJson, attempt })
-            return {
-              success: true,
-              outputVideoUrl: resultJson, // 尝试直接用原始内容
-            }
-          }
+        const parsed = this.parseTaskCheckOutput(checkResult)
+        if (parsed === null) {
+          await this.sleep(this.config.ecs.pollInterval)
+          continue
+        }
+        if (parsed === 'PENDING') {
+          // 任务还在处理中
+        } else if (parsed.success) {
+          log.info('任务处理成功', { instanceId, messageId, attempt })
+          return { success: true, outputVideoUrl: parsed.outputVideoUrl }
+        } else {
+          log.error('任务处理失败', undefined, {
+            instanceId,
+            messageId,
+            error: parsed.error,
+          })
+          return { success: false, error: parsed.error }
         }
 
-        if (doneStatus === 'FAILED') {
-          const resultJson = lines.slice(1).join('\n').trim()
-          let errorMsg = '任务处理失败'
-          try {
-            const result = JSON.parse(resultJson)
-            errorMsg = result.error || errorMsg
-          } catch {
-            // 忽略
-          }
-          log.error('任务处理失败', undefined, { instanceId, messageId, error: errorMsg })
-          return {
-            success: false,
-            error: errorMsg,
-          }
-        }
-
-        // PENDING - 任务还在处理中
         log.debug('任务处理中...', {
           instanceId,
           messageId,
@@ -656,8 +1039,8 @@ export class ECSOrchestrator {
         regionId: this.config.ecs.regionId,
         tag: [
           new $ECS.DescribeInstancesRequestTag({
-            key: 'mingle:role',
-            value: 'worker',
+            key: 'mingle:lifecycle',
+            value: 'ephemeral',
           }),
         ],
         status: 'Running',
@@ -721,7 +1104,12 @@ export class ECSOrchestrator {
           runningMinutes: (runningTime / 60000).toFixed(1),
         })
 
-        await this.releaseInstance(instanceId, context.messageId)
+        await this.disposeAfterTask(
+          instanceId,
+          context.messageId,
+          context.disposeMode ?? 'delete',
+          0,
+        )
         this.runningInstances.delete(instanceId)
         this.activeSlots = Math.max(0, this.activeSlots - 1)
       }
@@ -754,7 +1142,12 @@ export class ECSOrchestrator {
       log.warn(`强制释放 ${this.runningInstances.size} 个实例`)
       const entries = Array.from(this.runningInstances.entries())
       for (const [instanceId, context] of entries) {
-        await this.releaseInstance(instanceId, context.messageId)
+        await this.disposeAfterTask(
+          instanceId,
+          context.messageId,
+          context.disposeMode ?? 'delete',
+          0,
+        )
       }
       this.runningInstances.clear()
       this.activeSlots = 0

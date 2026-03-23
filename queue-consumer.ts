@@ -27,6 +27,7 @@ import {
   buildRetryingPayload,
 } from './webhook-sender'
 import { createLogger } from './logger'
+import { resolveTaskRouting } from './task-routing'
 
 const log = createLogger('Consumer')
 
@@ -35,7 +36,14 @@ interface TaskMessage {
   message_id: string
   user_id?: string
   video_download_url: string
+  /** 处理完成后上传地址（若处理器支持） */
+  video_upload_url?: string
   webhook_url: string
+  /** 业务操作列表，用于镜像/池 profile 路由 */
+  operation?: string[]
+  quality_preset?: string
+  /** 紧急覆盖：直接指定容器镜像 */
+  processing_image?: string
   detect_type?: 'auto' | 'manual'
   target_regions?: Array<{
     id: string
@@ -187,6 +195,8 @@ export class QueueConsumer {
         messageId,
         userId: task.user_id,
         detectType: task.detect_type || 'auto',
+        operations: task.operation,
+        qualityPreset: task.quality_preset,
         hasRegions: !!(task.target_regions && task.target_regions.length > 0),
       })
 
@@ -275,7 +285,20 @@ export class QueueConsumer {
   ): Promise<TaskResultWithAttempt> {
     let lastResult: TaskResult | null = null
     let lastAttempt = 0
-    const processingImage = process.env.WORKER_PROCESSING_IMAGE || 'mingle-processor:latest'
+    const routing = resolveTaskRouting(
+      {
+        operation: task.operation,
+        quality_preset: task.quality_preset,
+        processing_image: task.processing_image,
+      },
+      this.config,
+    )
+    log.info('任务镜像路由', {
+      messageId,
+      processingImage: routing.processingImage,
+      poolProfile: routing.poolProfile,
+      resolvedFrom: routing.resolvedFrom,
+    })
 
     for (let attempt = 0; attempt <= this.config.retry.maxAttempts; attempt++) {
       lastAttempt = attempt
@@ -306,6 +329,7 @@ export class QueueConsumer {
         messageId,
         attempt,
         detectType: task.detect_type || 'auto',
+        operations: task.operation,
       })
 
       // 构建任务参数
@@ -313,13 +337,17 @@ export class QueueConsumer {
         messageId,
         userId: task.user_id,
         videoDownloadUrl: task.video_download_url,
+        videoUploadUrl: task.video_upload_url,
         webhookUrl: task.webhook_url,
         detectType: task.detect_type || 'auto',
         targetRegions: task.target_regions ? JSON.stringify(task.target_regions) : undefined,
+        operations: task.operation,
+        qualityPreset: task.quality_preset,
+        poolProfile: routing.poolProfile,
       }
 
       // 运行 ECS 实例
-      lastResult = await this.orchestrator.runTask(taskParams, processingImage, attempt)
+      lastResult = await this.orchestrator.runTask(taskParams, routing.processingImage, attempt)
 
       if (lastResult.success) {
         return { ...lastResult, attempt }

@@ -8,7 +8,20 @@
  * - 重试策略：实例被回收或失败时重新创建
  */
 
+/** 解析自 WORKER_PROCESSING_IMAGE_MAP / WORKER_ECS_POOL_PROFILE_MAP 的 JSON 对象 */
+export type ProcessingRouteMap = Record<string, string>
+
 export interface WorkerConfig {
+  // ===== 按任务路由处理镜像（operation / quality_preset）=====
+  processing: {
+    /** WORKER_PROCESSING_IMAGE，映射未命中时使用 */
+    defaultImage: string
+    /** 键：sortedOps@quality、sortedOps、@quality */
+    imageMap: ProcessingRouteMap
+    /** 键同上，值为池标签 mingle:pool-profile 的 Tag Value */
+    poolProfileMap: ProcessingRouteMap
+  }
+
   // ===== RabbitMQ 配置 =====
   rabbitmq: {
     url: string
@@ -69,6 +82,30 @@ export interface WorkerConfig {
     mockProcessing?: boolean
     /** Mock 模式下延迟秒数，用于模拟处理耗时 */
     mockDelaySeconds?: number
+    /**
+     * 是否启用 ECS「池」：优先启动已存在且已停止的池实例；任务结束后仅 Stop，不释放。
+     * 池内机器需打标签 `mingle:lifecycle=<poolLifecycleTagValue>`，且镜像/规格与配置一致。
+     */
+    poolEnabled: boolean
+    /** 池实例标签 `mingle:lifecycle` 的值，默认 `pool` */
+    poolLifecycleTagValue: string
+    /**
+     * 池实例可选第二维标签键，用于区分业务池（如字幕 / 放大）。
+     * 值为 WORKER_ECS_POOL_PROFILE_MAP 解析结果；未设置 profile 时不按此标签过滤。
+     */
+    poolProfileTagKey: string
+    /**
+     * 在 `ALIYUN_ECS_INSTANCE_TYPE` 之后依次尝试的规格（逗号分隔），用于库存不足降级。
+     */
+    instanceTypeFallback: string[]
+    /**
+     * UserData 中 Docker：`auto` 缺失则尝试 dnf 安装；`require_host` 要求镜像预装 Docker，否则失败（推荐自定义镜像）。
+     */
+    userdataDockerPolicy: 'auto' | 'require_host'
+    /**
+     * 创建实例前调用 DescribeAvailableResource，将更有库存的规格排到前面（失败则忽略）。
+     */
+    prefilterAvailableResource: boolean
   }
 
   // ===== Webhook 回调配置 =====
@@ -149,7 +186,21 @@ export function loadConfig(): WorkerConfig {
       ? parseFloatEnv('ALIYUN_ECS_SPOT_PRICE_LIMIT', { min: 0 })
       : undefined
 
+  const defaultProcessingImage = env('WORKER_PROCESSING_IMAGE', 'mingle-processor:latest')
+  const processingImageMap = parseJsonObjectEnv('WORKER_PROCESSING_IMAGE_MAP', {})
+  const poolProfileMap = parseJsonObjectEnv('WORKER_ECS_POOL_PROFILE_MAP', {})
+  const instanceTypeFallback = env('ALIYUN_ECS_INSTANCE_TYPE_FALLBACK', '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+
   return {
+    processing: {
+      defaultImage: defaultProcessingImage,
+      imageMap: processingImageMap,
+      poolProfileMap,
+    },
+
     rabbitmq: {
       url: env('RABBITMQ_URL', 'amqp://localhost:5672'),
       queue: env('RABBITMQ_QUEUE', 'media.uploaded'),
@@ -182,6 +233,15 @@ export function loadConfig(): WorkerConfig {
       ramRoleName: env('ALIYUN_ECS_RAM_ROLE_NAME', '') || undefined,
       mockProcessing: parseBoolEnv('WORKER_MOCK_PROCESSING', false),
       mockDelaySeconds: parseIntEnv('WORKER_MOCK_DELAY_SECONDS', 60, { min: 1 }),
+      poolEnabled: parseBoolEnv('WORKER_ECS_POOL_ENABLED', false),
+      poolLifecycleTagValue: env('WORKER_ECS_POOL_TAG_VALUE', 'pool').trim() || 'pool',
+      poolProfileTagKey: env('WORKER_ECS_POOL_PROFILE_TAG_KEY', 'mingle:pool-profile').trim() || 'mingle:pool-profile',
+      instanceTypeFallback,
+      userdataDockerPolicy: parseEnumEnv<'auto' | 'require_host'>('WORKER_ECS_USERDATA_DOCKER_POLICY', {
+        defaultValue: 'auto',
+        allowed: ['auto', 'require_host'],
+      }),
+      prefilterAvailableResource: parseBoolEnv('WORKER_ECS_PREFILTER_AVAILABLE_RESOURCE', false),
     },
 
     webhook: {
@@ -284,4 +344,23 @@ function parseEnumEnv<T extends string>(key: string, params: { defaultValue: T; 
     throw new Error(`配置 ${key} 非法：${raw}，允许值=${params.allowed.join(',')}`)
   }
   return v
+}
+
+/** 解析 JSON 对象环境变量；非法或空则返回 defaultObj */
+function parseJsonObjectEnv(key: string, defaultObj: ProcessingRouteMap): ProcessingRouteMap {
+  const raw = process.env[key]
+  if (raw === undefined || !raw.trim()) return { ...defaultObj }
+  try {
+    const v = JSON.parse(raw) as unknown
+    if (v === null || typeof v !== 'object' || Array.isArray(v)) {
+      throw new Error('不是 JSON 对象')
+    }
+    const out: ProcessingRouteMap = {}
+    for (const [k, val] of Object.entries(v)) {
+      if (typeof val === 'string' && val.trim()) out[k] = val.trim()
+    }
+    return out
+  } catch (e) {
+    throw new Error(`配置 ${key} 必须是 JSON 对象（字符串键到非空字符串值）：${e instanceof Error ? e.message : e}`)
+  }
 }

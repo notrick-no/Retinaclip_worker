@@ -34,6 +34,7 @@ describe('config.ts', () => {
       ALIYUN_ECS_SECURITY_GROUP_ID: undefined,
       ALIYUN_ECS_VSWITCH_ID: undefined,
       WEBHOOK_SECRET: undefined,
+      WORKER_PROCESSING_IMAGE_MAP: undefined,
     })
   })
 
@@ -52,6 +53,18 @@ describe('config.ts', () => {
     expect(cfg.rabbitmq.queue).toBe('media.uploaded')
     expect(cfg.rabbitmq.prefetchCount).toBe(2)
     expect(cfg.webhook.secret).toBe('wh-secret')
+    expect(cfg.processing.defaultImage).toBe('mingle-processor:latest')
+    expect(cfg.ecs.poolProfileTagKey).toBe('mingle:pool-profile')
+    expect(cfg.ecs.userdataDockerPolicy).toBe('auto')
+  })
+
+  it('WORKER_PROCESSING_IMAGE_MAP 解析为对象', () => {
+    setEnv({
+      WORKER_PROCESSING_IMAGE_MAP: JSON.stringify({ 'a@normal': 'img:1', skip: 1 }),
+    })
+    const cfg = loadConfig()
+    expect(cfg.processing.imageMap['a@normal']).toBe('img:1')
+    expect(cfg.processing.imageMap['skip']).toBeUndefined()
   })
 })
 

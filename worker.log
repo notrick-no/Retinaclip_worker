@@ -1,6 +1,0 @@
-[2026-03-20T08:26:03.970Z] [INFO ] [Main] ═══════════════════════════════════════════════
-[2026-03-20T08:26:03.977Z] [INFO ] [Main]   Mingle Worker - 阿里云 ECS 实例编排器 启动中
-[2026-03-20T08:26:03.977Z] [INFO ] [Main] ═══════════════════════════════════════════════
-[2026-03-20T08:26:03.977Z] [INFO ] [Main] 配置信息 {"queue":"media.uploaded","prefetch":2,"maxInstances":5,"region":"cn-shanghai","instanceType":"ecs.gn5i-c2g1.large","imageId":"almalinux_9_7_x64_20G_alibase_20260214.vhd","spotInstance":true,"spotStrategy":"SpotAsPriceGo","taskTimeout":"30 min","retryAttempts":3,"mockProcessing":false}
-[2026-03-20T08:26:03.977Z] [INFO ] [Main] 初始化 ECS 编排器...
-[2026-03-20T08:26:03.979Z] [ERROR] [Main] Worker 启动失败 {"error":"ECS20140526 is not a constructor","stack":"TypeError: ECS20140526 is not a constructor\n    at new ECSOrchestrator (/Users/notrickno/Desktop/文件/github/Retinaclip_worker/ecs-orchestrator.ts:92:19)\n    at main (/Users/notrickno/Desktop/文件/github/Retinaclip_worker/index.ts:86:18)\n    at <anonymous> (/Users/notrickno/Desktop/文件/github/Retinaclip_worker/index.ts:187:1)\n    at ModuleJob.run (node:internal/modules/esm/module_job:343:25)\n    at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:665:26)\n    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:117:5)"}
