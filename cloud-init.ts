@@ -259,6 +259,16 @@ set -euo pipefail
 RESULT_FILE="${H.taskResult}"
 DONE_FILE="${H.taskDone}"
 
+trap 'rc=$?; \
+  if [ "$rc" -ne 0 ]; then \
+    if [ ! -f "$DONE_FILE" ]; then \
+      echo "{\"success\":false,\"error\":\"host script failed (exit=$rc)\"}" > "$RESULT_FILE"; \
+      echo "FAILED" > "$DONE_FILE"; \
+    elif [ ! -f "$RESULT_FILE" ]; then \
+      echo "{\"success\":false,\"error\":\"host script failed (exit=$rc)\"}" > "$RESULT_FILE"; \
+    fi; \
+  fi' EXIT
+
 ${shellSelectWorkerLogSnippet()}
 
 ${shellNasAutoMountSnippet(
@@ -452,6 +462,16 @@ set -euo pipefail
 RESULT_FILE="${H.taskResult}"
 DONE_FILE="${H.taskDone}"
 
+trap 'rc=$?; \
+  if [ "$rc" -ne 0 ]; then \
+    if [ ! -f "$DONE_FILE" ]; then \
+      echo "{\"success\":false,\"error\":\"host script failed (exit=$rc)\"}" > "$RESULT_FILE"; \
+      echo "FAILED" > "$DONE_FILE"; \
+    elif [ ! -f "$RESULT_FILE" ]; then \
+      echo "{\"success\":false,\"error\":\"host script failed (exit=$rc)\"}" > "$RESULT_FILE"; \
+    fi; \
+  fi' EXIT
+
 ${shellSelectWorkerLogSnippet()}
 
 ${shellNasAutoMountSnippet(
@@ -575,16 +595,29 @@ CONTAINER_NAME="retinaclip-task-${task.messageId}"
 # 运行容器，使用 --env-file 传递任务参数
 # --rm: 容器退出后自动删除
 # --network host: 使用宿主机网络（方便访问 webhook）
-docker run --rm \\
+# GPU 参数在运行时二次校验：仅当实例类型推断为 GPU（useGpuFlag）且宿主机存在 /dev/nvidia* 或 nvidia-smi 时才启用。
+USE_GPU_BY_TYPE='${useGpuFlag ? '1' : '0'}'
+GPU_RUN_OPTS=''
+if [ "$USE_GPU_BY_TYPE" = "1" ]; then
+  if [ -e /dev/nvidia0 ] || command -v nvidia-smi >/dev/null 2>&1; then
+    GPU_RUN_OPTS='--gpus all'
+  else
+    echo "[$(date -Iseconds)] WARN: 检测不到 NVIDIA 设备/驱动，跳过 --gpus all"
+  fi
+fi
+docker run \\
   --name "$CONTAINER_NAME" \\
   --env-file ${H.taskEnv} \\
   --network host \\
   --tmpfs /tmp:rw,noexec,nosuid,size=4g \\
   --memory=${Math.floor(config.ecs.maxInstances > 1 ? 8 : 16)}g \\
   --cpus=${config.ecs.maxInstances > 1 ? 4 : 8} \\
-  ${useGpuFlag ? '--gpus all' : ''} \\
+  $GPU_RUN_OPTS \\
   "$IMAGE" \\
   > ${H.containerStdout} 2> ${H.containerStderr}
+#
+# 调试/排障期间不自动移除容器（避免丢失容器对象，方便 docker ps / logs / inspect）。
+# 容器退出后将保留，避免使用 --rm。
 
 CONTAINER_EXIT_CODE=$?
 
