@@ -114,6 +114,17 @@ export interface WorkerConfig {
      * 创建实例前调用 DescribeAvailableResource，将更有库存的规格排到前面（失败则忽略）。
      */
     prefilterAvailableResource: boolean
+    /**
+     * 合并进宿主机 `/etc/docker/daemon.json` 的 `insecure-registries`（逗号分隔）。
+     * 与镜像名中自动识别的 `host:port` 合并；用于内网 HTTP Registry（如 172.16.0.70:5000）。
+     */
+    dockerInsecureRegistries: string[]
+    /** 拉取前 `docker login` 的用户名（可选，私有仓库） */
+    dockerRegistryUsername?: string
+    /** 拉取前 `docker login` 的密码（可选） */
+    dockerRegistryPassword?: string
+    /** `docker login` 的 registry 地址，默认取镜像第一段 `host:port` */
+    dockerRegistryServer?: string
   }
 
   // ===== Webhook 回调配置 =====
@@ -202,6 +213,14 @@ export function loadConfig(): WorkerConfig {
     .map((s) => s.trim())
     .filter(Boolean)
 
+  const dockerInsecureRegistries = env('WORKER_DOCKER_INSECURE_REGISTRIES', '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+  const dockerRegistryUsername = env('WORKER_DOCKER_REGISTRY_USERNAME', '').trim() || undefined
+  const dockerRegistryPassword = env('WORKER_DOCKER_REGISTRY_PASSWORD', '').trim() || undefined
+  const dockerRegistryServer = env('WORKER_DOCKER_REGISTRY_SERVER', '').trim() || undefined
+
   return {
     processing: {
       defaultImage: defaultProcessingImage,
@@ -253,6 +272,10 @@ export function loadConfig(): WorkerConfig {
         allowed: ['auto', 'require_host'],
       }),
       prefilterAvailableResource: parseBoolEnv('WORKER_ECS_PREFILTER_AVAILABLE_RESOURCE', false),
+      dockerInsecureRegistries,
+      dockerRegistryUsername,
+      dockerRegistryPassword,
+      dockerRegistryServer,
     },
 
     webhook: {

@@ -43,6 +43,15 @@ WORKER_PROCESSING_IMAGE=retinaclip-processor:latest
 # 查找顺序：sortedOps@quality → sortedOps → @quality → WORKER_PROCESSING_IMAGE
 # 例：消息 "operation":["remove subtitles"],"quality_preset":"normal" 对应键 "remove subtitles@normal"
 # WORKER_PROCESSING_IMAGE_MAP={"remove subtitles@normal":"registry.cn-shanghai.aliyuncs.com/ns/retinaclip-subtitle:normal","remove subtitles":"registry.cn-shanghai.aliyuncs.com/ns/retinaclip-subtitle:latest"}
+# 内网 HTTP 仓库示例：172.16.0.70:5000/quzimu-container:v4（须与安全组放行 5000、仓库监听 0.0.0.0 一致）
+# WORKER_PROCESSING_IMAGE=172.16.0.70:5000/quzimu-container:v4
+
+# 额外写入 Docker insecure-registries（逗号分隔）；镜像名为 host:port/... 时也会自动加入该 host:port
+# WORKER_DOCKER_INSECURE_REGISTRIES=172.16.0.70:5000
+# 私有仓需认证时（勿把密码提交到 Git，仅部署机 .env）
+# WORKER_DOCKER_REGISTRY_USERNAME=robot
+# WORKER_DOCKER_REGISTRY_PASSWORD=***
+# WORKER_DOCKER_REGISTRY_SERVER=172.16.0.70:5000
 
 # 池实例第二标签 retinaclip:pool-profile 的值（键规则与 IMAGE_MAP 相同）
 # WORKER_ECS_POOL_PROFILE_MAP={"remove subtitles@normal":"subtitle","upscale@high":"upscale"}

@@ -108,6 +108,7 @@ describe('queue-consumer.ts', () => {
         instanceTypeFallback: [],
         userdataDockerPolicy: 'auto',
         prefilterAvailableResource: false,
+        dockerInsecureRegistries: [],
       },
       webhook: {
         secret: 'wh-secret',
@@ -227,6 +228,7 @@ describe('queue-consumer.ts', () => {
         instanceTypeFallback: [],
         userdataDockerPolicy: 'auto',
         prefilterAvailableResource: false,
+        dockerInsecureRegistries: [],
       },
       webhook: {
         secret: 'wh-secret',

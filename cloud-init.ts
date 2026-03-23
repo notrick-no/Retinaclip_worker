@@ -21,6 +21,32 @@ import { TaskParams } from './domain/task'
 import { WORKER_HOST_PATHS } from './worker-branding'
 
 /**
+ * 从内网镜像名 `host:port/repo:tag` 提取 registry，并与配置的列表合并（去重）。
+ * 用于写入 Docker `insecure-registries`（HTTP 私有仓）。
+ */
+export function mergeDockerInsecureRegistries(
+  processingImage: string,
+  configured: string[],
+): string[] {
+  const set = new Set<string>()
+  for (const c of configured) {
+    const t = c.trim()
+    if (t) set.add(t)
+  }
+  const firstSegment = processingImage.split('/')[0]?.trim() ?? ''
+  if (/:[0-9]+$/.test(firstSegment)) {
+    set.add(firstSegment)
+  }
+  return [...set]
+}
+
+/** 用于 docker login 的默认 registry（镜像第一段为 host:port 时） */
+export function defaultDockerRegistryServerFromImage(processingImage: string): string {
+  const firstSegment = processingImage.split('/')[0]?.trim() ?? ''
+  return /:[0-9]+$/.test(firstSegment) ? firstSegment : ''
+}
+
+/**
  * 生成 cloud-init UserData 脚本
  * 
  * 阿里云 ECS UserData 要求：
@@ -139,6 +165,76 @@ function generateDockerStartupScript(
   const useGpuFlag = hostInst.includes('gn')
   const dockerPolicy = config.ecs.userdataDockerPolicy
 
+  const insecureRegs = mergeDockerInsecureRegistries(
+    processingImage,
+    config.ecs.dockerInsecureRegistries ?? [],
+  )
+  const regJsonB64 = Buffer.from(JSON.stringify(insecureRegs), 'utf8').toString('base64')
+  const loginServer =
+    config.ecs.dockerRegistryServer?.trim() || defaultDockerRegistryServerFromImage(processingImage)
+  const hasDockerLogin = Boolean(
+    config.ecs.dockerRegistryUsername && config.ecs.dockerRegistryPassword && loginServer,
+  )
+
+  const insecureRegistryShellBlock =
+    insecureRegs.length === 0
+      ? `echo "[$(date -Iseconds)] 无需合并 Docker insecure-registries（非 host:port 私有仓或列表为空）"
+DOCKER_DAEMON_CHANGED=0`
+      : `
+echo "[$(date -Iseconds)] 合并 Docker insecure-registries（内网 HTTP 仓库）: ${insecureRegs.map((r) => r.replace(/"/g, '\\"')).join(', ')}"
+REG_JSON=$(printf '%s' '${regJsonB64}' | base64 -d)
+export REG_JSON
+mkdir -p /etc/docker
+[ -f /etc/docker/daemon.json ] && cp /etc/docker/daemon.json /tmp/daemon.retinaclip.bak 2>/dev/null || true
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "[$(date -Iseconds)] ERROR: 需要 python3 以合并 /etc/docker/daemon.json（请预装或改用自带 Docker 的镜像）"
+  echo '{"success":false,"error":"python3 missing for Docker insecure-registries merge"}' > "$RESULT_FILE"
+  echo "FAILED" > "$DONE_FILE"
+  exit 1
+fi
+python3 <<'PYMERGE'
+import json, os
+extra = json.loads(os.environ.get("REG_JSON", "[]"))
+p = "/etc/docker/daemon.json"
+d = {}
+if os.path.exists(p):
+    try:
+        with open(p) as f:
+            d = json.load(f)
+    except Exception:
+        d = {}
+regs = list(d.get("insecure-registries") or [])
+for r in extra:
+    if r and r not in regs:
+        regs.append(r)
+d["insecure-registries"] = regs
+os.makedirs("/etc/docker", exist_ok=True)
+with open(p, "w") as f:
+    json.dump(d, f, indent=2)
+PYMERGE
+DOCKER_DAEMON_CHANGED=0
+if [ ! -f /tmp/daemon.retinaclip.bak ]; then
+  DOCKER_DAEMON_CHANGED=1
+elif ! cmp -s /etc/docker/daemon.json /tmp/daemon.retinaclip.bak 2>/dev/null; then
+  DOCKER_DAEMON_CHANGED=1
+fi
+if [ "$DOCKER_DAEMON_CHANGED" -eq 1 ]; then
+  echo "[$(date -Iseconds)] daemon.json 已更新 insecure-registries"
+fi
+`.trim()
+
+  const dockerLoginShellBlock = hasDockerLogin
+    ? `
+echo "[$(date -Iseconds)] docker login '${esc(loginServer)}' ..."
+if ! printf '%s\\n' '${esc(config.ecs.dockerRegistryPassword!)}' | docker login '${esc(loginServer)}' -u '${esc(config.ecs.dockerRegistryUsername!)}' --password-stdin; then
+  echo "[$(date -Iseconds)] ERROR: docker login 失败"
+  echo '{"success":false,"error":"docker login failed"}' > "$RESULT_FILE"
+  echo "FAILED" > "$DONE_FILE"
+  exit 1
+fi
+`.trim()
+    : ''
+
   const dockerInstallBlock =
     dockerPolicy === 'require_host'
       ? `if ! command -v docker > /dev/null 2>&1; then
@@ -191,10 +287,6 @@ fi
     echo "FAILED" > "$DONE_FILE"
     exit 1
   fi
-
-  if command -v systemctl > /dev/null 2>&1; then
-    systemctl enable --now docker >/dev/null 2>&1 || systemctl start docker >/dev/null 2>&1 || true
-  fi
 fi
 `
 
@@ -241,9 +333,25 @@ echo "[$(date -Iseconds)] 任务参数已写入"
 # ---------------------------------------------------------
 ${dockerInstallBlock}
 
-# Docker 命令存在时：尝试启动服务
+# ---------------------------------------------------------
+# 1.55 内网 HTTP Registry：合并 insecure-registries（须在首次启动 Docker 前完成）
+# ---------------------------------------------------------
+${insecureRegistryShellBlock}
+
+# ---------------------------------------------------------
+# 1.6 启动 Docker；若已在跑且 daemon.json 有变则重启以应用 insecure-registries
+# ---------------------------------------------------------
 if command -v systemctl > /dev/null 2>&1; then
-  systemctl start docker >/dev/null 2>&1 || true
+  if systemctl is-active --quiet docker 2>/dev/null; then
+    if [ "\${DOCKER_DAEMON_CHANGED:-0}" -eq 1 ]; then
+      echo "[$(date -Iseconds)] 重启 Docker 以应用 insecure-registries..."
+      systemctl restart docker >/dev/null 2>&1 || true
+      for j in $(seq 1 45); do docker info >/dev/null 2>&1 && break; sleep 2; done
+    fi
+  else
+    systemctl enable docker >/dev/null 2>&1 || true
+    systemctl start docker >/dev/null 2>&1 || true
+  fi
 fi
 
 # ---------------------------------------------------------
@@ -253,6 +361,7 @@ echo "[$(date -Iseconds)] 等待 Docker 服务就绪..."
 for i in $(seq 1 60); do
   if docker info > /dev/null 2>&1; then
     echo "[$(date -Iseconds)] Docker 已就绪"
+    docker info 2>/dev/null | grep -i 'Insecure Registries' || true
     break
   fi
   if [ $i -eq 60 ]; then
@@ -264,43 +373,35 @@ for i in $(seq 1 60); do
   sleep 2
 done
 
-# ---------------------------------------------------------
-# 2.5 若镜像是「内网 Registry」host:port 形式，配置 insecure-registry 以便 HTTP 拉取
-# ---------------------------------------------------------
-IMAGE="${esc(processingImage)}"
-REGISTRY_PART=$(echo "$IMAGE" | cut -d/ -f1)
-if echo "$REGISTRY_PART" | grep -qE ':[0-9]+$'; then
-  echo "[$(date -Iseconds)] 检测到内网 Registry ($REGISTRY_PART)，配置 insecure-registry..."
-  mkdir -p /etc/docker
-  export REGISTRY_PART
-  python3 -c '
-import json, os
-p = "/etc/docker/daemon.json"
-d = {}
-if os.path.exists(p):
-  try:
-    with open(p) as f: d = json.load(f)
-  except Exception: pass
-r = os.environ.get("REGISTRY_PART", "")
-reg = list(d.get("insecure-registries") or [])
-if r and r not in reg:
-  reg.append(r)
-  d["insecure-registries"] = reg
-  with open(p, "w") as f: json.dump(d, f, indent=2)
-'
-  systemctl restart docker || true
-  for i in $(seq 1 30); do docker info >/dev/null 2>&1 && break; sleep 2; done
-fi
+${dockerLoginShellBlock}
 
 # ---------------------------------------------------------
 # 3. 拉取处理镜像（如果本地不存在）
 # ---------------------------------------------------------
+IMAGE="${esc(processingImage)}"
+REGISTRY_ENDPOINT=$(echo "$IMAGE" | cut -d/ -f1)
+if echo "$REGISTRY_ENDPOINT" | grep -qE ':[0-9]+$'; then
+  echo "[$(date -Iseconds)] 探测 Registry v2 (HTTP): http://$REGISTRY_ENDPOINT/v2/"
+  if command -v curl >/dev/null 2>&1; then
+    if curl -sS -o /dev/null --connect-timeout 5 --max-time 15 "http://$REGISTRY_ENDPOINT/v2/"; then
+      echo "[$(date -Iseconds)] Registry /v2/ 可达"
+    else
+      echo "[$(date -Iseconds)] WARN: curl http://$REGISTRY_ENDPOINT/v2/ 失败（检查安全组、仓库监听与路由）"
+    fi
+  fi
+fi
+
 echo "[$(date -Iseconds)] 检查处理镜像: $IMAGE"
 
 if ! docker image inspect "$IMAGE" > /dev/null 2>&1; then
   echo "[$(date -Iseconds)] 正在拉取镜像..."
-  if ! docker pull "$IMAGE"; then
-    echo "[$(date -Iseconds)] ERROR: 镜像拉取失败"
+  set +e
+  docker pull "$IMAGE" 2>&1 | tee /tmp/retinaclip-docker-pull.log
+  PULL_EC=\${PIPESTATUS[0]}
+  set -e
+  if [ "$PULL_EC" -ne 0 ]; then
+    echo "[$(date -Iseconds)] ERROR: 镜像拉取失败 (exit $PULL_EC)，最近日志:"
+    tail -n 30 /tmp/retinaclip-docker-pull.log 2>/dev/null || true
     echo '{"success":false,"error":"Image pull failed: '"$IMAGE"'"}' > "$RESULT_FILE"
     echo "FAILED" > "$DONE_FILE"
     exit 1

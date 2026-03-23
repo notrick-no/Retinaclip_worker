@@ -45,6 +45,12 @@ function main() {
   console.log('  mockProcessing ', cfg.ecs.mockProcessing ?? false)
   console.log('  userdataDocker ', cfg.ecs.userdataDockerPolicy)
   console.log('  prefilterStock ', cfg.ecs.prefilterAvailableResource)
+  console.log(
+    '  dockerInsecure ',
+    cfg.ecs.dockerInsecureRegistries.length
+      ? cfg.ecs.dockerInsecureRegistries.join(', ')
+      : '(无，仍会从镜像 host:port 自动推断)',
+  )
 
   console.log('\n── 处理镜像路由 ──')
   console.log('  defaultImage   ', cfg.processing.defaultImage)
