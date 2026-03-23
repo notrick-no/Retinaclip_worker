@@ -53,6 +53,17 @@ WORKER_PROCESSING_IMAGE=retinaclip-processor:latest
 # WORKER_DOCKER_REGISTRY_PASSWORD=***
 # WORKER_DOCKER_REGISTRY_SERVER=172.16.0.70:5000
 
+# ========== NAS 挂载（NFS） ==========
+# 用于宿主机启动时自动挂载 NAS 到 /mnt
+# 注意：挂载点域名要填 NAS 控制台给的“挂载目标/挂载点”域名或 IP（不要填 ECS 实例 ID）。
+# WORKER_NAS_MOUNT_DOMAIN=<your-nas-mount-target-domain>
+# 默认导出路径为 /
+# WORKER_NAS_EXPORT_PATH=/
+# 默认本地挂载目录为 /mnt
+# WORKER_NAS_MOUNT_POINT=/mnt
+# NAS ID：仅用于日志定位
+# WORKER_NAS_ID=3e41f4bcd1
+
 # 池实例第二标签 retinaclip:pool-profile 的值（键规则与 IMAGE_MAP 相同）
 # WORKER_ECS_POOL_PROFILE_MAP={"remove subtitles@normal":"subtitle","upscale@high":"upscale"}
 

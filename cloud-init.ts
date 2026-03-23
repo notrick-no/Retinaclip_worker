@@ -46,20 +46,35 @@ echo "[$(date -Iseconds)] RetinaClip 宿主机日志: $LOG_FILE"
  * - NAS ID：3e41f4bcd1（仅用于日志定位）
  * - 挂载点域名：worker 的域名（优先 $WORKER_NAS_MOUNT_DOMAIN，否则取 hostname -f）
  */
-function shellNasAutoMountSnippet(): string {
+function shellNasAutoMountSnippet(
+  nasMountDomain: string,
+  nasExportPath: string,
+  nasMountPoint: string,
+  nasId: string,
+): string {
+  const nasServerLine = nasMountDomain
+    ? `NAS_SERVER='${nasMountDomain.replace(/'/g, "'\\''")}'`
+    : `NAS_SERVER="$(hostname -f 2>/dev/null || hostname)"`
+
+  const escPath = nasExportPath.replace(/'/g, "'\\''")
+  const escPoint = nasMountPoint.replace(/'/g, "'\\''")
+  const escId = nasId.replace(/'/g, "'\\''")
+
   return `
 # ---------------------------------------------------------
 # NAS 自动挂载（NFS）
 # ---------------------------------------------------------
-NAS_ID='3e41f4bcd1'
-NAS_EXPORT_PATH='/'
-NAS_MOUNT_POINT='/mnt'
-NAS_SERVER="\${WORKER_NAS_MOUNT_DOMAIN:-$(hostname -f 2>/dev/null || hostname)}"
+NAS_ID='${escId}'
+NAS_EXPORT_PATH='${escPath}'
+NAS_MOUNT_POINT='${escPoint}'
+${nasServerLine}
 
 echo "[$(date -Iseconds)] NAS auto-mount start: id=$NAS_ID server=$NAS_SERVER export=$NAS_EXPORT_PATH -> $NAS_MOUNT_POINT"
 
 if [ -z "$NAS_SERVER" ]; then
   echo "[$(date -Iseconds)] ERROR: NAS server（挂载点域名）为空，无法挂载"
+  echo '{"success":false,"error":"NAS mount failed: NAS_SERVER empty"}' > "$RESULT_FILE"
+  echo "FAILED" > "$DONE_FILE"
   exit 1
 fi
 
@@ -77,6 +92,8 @@ fi
 
 if ! command -v mount.nfs >/dev/null 2>&1; then
   echo "[$(date -Iseconds)] ERROR: nfs-utils 安装失败或 mount.nfs 不可用"
+  echo '{"success":false,"error":"NAS mount failed: nfs-utils not ready"}' > "$RESULT_FILE"
+  echo "FAILED" > "$DONE_FILE"
   exit 1
 fi
 
@@ -91,8 +108,20 @@ if grep -qE "[[:space:]]$NAS_MOUNT_POINT[[:space:]]" /proc/mounts 2>/dev/null; t
   echo "[$(date -Iseconds)] NAS 已挂载：$NAS_MOUNT_POINT"
 else
   echo "[$(date -Iseconds)] 尝试挂载 NAS..."
+
+# NFSv4 使用 2049 端口；先做连通性提示（不保证一定准确）
+if command -v bash >/dev/null 2>&1; then
+  if ! bash -c "timeout 3 bash -c 'cat < /dev/null > /dev/tcp/$NAS_SERVER/2049' " >/dev/null 2>&1; then
+    echo "[$(date -Iseconds)] WARN: NAS 端口 2049 可能不可达（连接被拒绝/超时/安全组拦截）"
+  fi
+fi
+
   if ! mount -a; then
-    mount -t nfs4 -o _netdev,vers=4.0,soft,timeo=600,retrans=2 "$NAS_SERVER:$NAS_EXPORT_PATH" "$NAS_MOUNT_POINT" || exit 1
+    mount -t nfs4 -o _netdev,vers=4.0,soft,timeo=600,retrans=2 "$NAS_SERVER:$NAS_EXPORT_PATH" "$NAS_MOUNT_POINT" || {
+      echo '{"success":false,"error":"NAS mount failed: mount.nfs4 connect failed"}' > "$RESULT_FILE"
+      echo "FAILED" > "$DONE_FILE"
+      exit 1
+    }
   fi
 fi
 
@@ -199,7 +228,12 @@ DONE_FILE="${H.taskDone}"
 
 ${shellSelectWorkerLogSnippet()}
 
-${shellNasAutoMountSnippet()}
+${shellNasAutoMountSnippet(
+    config.ecs.nasMountDomain,
+    config.ecs.nasExportPath,
+    config.ecs.nasMountPoint,
+    config.ecs.nasId,
+  )}
 
 echo "[$(date -Iseconds)] ===== RetinaClip Worker Mock 启动 ====="
 echo "[$(date -Iseconds)] 任务 ID: ${task.messageId}"
@@ -387,7 +421,12 @@ DONE_FILE="${H.taskDone}"
 
 ${shellSelectWorkerLogSnippet()}
 
-${shellNasAutoMountSnippet()}
+${shellNasAutoMountSnippet(
+    config.ecs.nasMountDomain,
+    config.ecs.nasExportPath,
+    config.ecs.nasMountPoint,
+    config.ecs.nasId,
+  )}
 
 echo "[$(date -Iseconds)] ===== RetinaClip Worker 启动 ====="
 echo "[$(date -Iseconds)] 任务 ID: ${task.messageId}"

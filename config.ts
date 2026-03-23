@@ -125,6 +125,17 @@ export interface WorkerConfig {
     dockerRegistryPassword?: string
     /** `docker login` 的 registry 地址，默认取镜像第一段 `host:port` */
     dockerRegistryServer?: string
+    /**
+     * NAS（NFS）挂载配置：用于宿主机启动时自动把 NAS 挂到本地目录。
+     * 建议将挂载点域名填成 NAS 控制台给的“挂载点/挂载目标”域名或 IP（非 ECS 实例 ID）。
+     */
+    nasMountDomain: string
+    /** NAS 导出路径，默认 `/` */
+    nasExportPath: string
+    /** 本地挂载目录，默认 `/mnt` */
+    nasMountPoint: string
+    /** NAS ID：仅用于日志定位 */
+    nasId: string
   }
 
   // ===== Webhook 回调配置 =====
@@ -221,6 +232,12 @@ export function loadConfig(): WorkerConfig {
   const dockerRegistryPassword = env('WORKER_DOCKER_REGISTRY_PASSWORD', '').trim() || undefined
   const dockerRegistryServer = env('WORKER_DOCKER_REGISTRY_SERVER', '').trim() || undefined
 
+  // ===== NAS（NFS）挂载配置 =====
+  const nasMountDomain = env('WORKER_NAS_MOUNT_DOMAIN', '').trim()
+  const nasExportPath = env('WORKER_NAS_EXPORT_PATH', '/').trim() || '/'
+  const nasMountPoint = env('WORKER_NAS_MOUNT_POINT', '/mnt').trim() || '/mnt'
+  const nasId = env('WORKER_NAS_ID', '3e41f4bcd1').trim() || '3e41f4bcd1'
+
   return {
     processing: {
       defaultImage: defaultProcessingImage,
@@ -276,6 +293,10 @@ export function loadConfig(): WorkerConfig {
       dockerRegistryUsername,
       dockerRegistryPassword,
       dockerRegistryServer,
+      nasMountDomain,
+      nasExportPath,
+      nasMountPoint,
+      nasId,
     },
 
     webhook: {
