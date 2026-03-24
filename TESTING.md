@@ -87,6 +87,28 @@ npx tsx scripts/test-scheduler-run-pool-task.ts \
   --poolProfile subtitle
 ```
 
+### 池机内：用 `docker exec` 看处理日志
+
+编排器创建的容器名是 **`retinaclip-task-<RabbitMQ messageId>`**，与手动测试时常用的 `quzimu-container` 不同。任务**正在运行**时，在池机上另开 SSH 会话，先查名字再 tail：
+
+```bash
+docker ps --format 'table {{.Names}}\t{{.Status}}'
+# 假设容器名为 retinaclip-task-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+CONTAINER=retinaclip-task-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+
+docker exec "$CONTAINER" tail -f /AppFrontend/logs/backend.log
+docker exec "$CONTAINER" tail -f /AppFrontend/logs/queue_worker.log
+```
+
+若同一时间只有一个 `retinaclip-task-*` 在跑，也可用：
+
+```bash
+C=$(docker ps -qf 'name=retinaclip-task-')
+docker exec "$C" tail -f /AppFrontend/logs/backend.log
+```
+
+> 宿主机 UserData/云助手脚本在启动 `docker run` 前也会把上述两条 `docker exec …` 提示打到宿主机日志（便于复制）。编排器当前为**前台**跑容器（阻塞至退出），因此必须在**另一终端**执行 `exec`。
+
 ---
 
 ## 七、Shell 快捷脚本 `scripts/rc.sh`
@@ -107,7 +129,7 @@ npx tsx scripts/test-scheduler-run-pool-task.ts \
 
 ---
 
-## 六、推荐自测顺序（新环境）
+## 八、推荐自测顺序（新环境）
 
 1. `npm run test:config`  
 2. `npm run test:rabbitmq`  

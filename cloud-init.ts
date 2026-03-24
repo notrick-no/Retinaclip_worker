@@ -612,6 +612,11 @@ fi
 echo "[$(date -Iseconds)] 启动处理容器..."
 
 CONTAINER_NAME="retinaclip-task-${task.messageId}"
+echo "[$(date -Iseconds)] 容器名: $CONTAINER_NAME"
+
+echo "[$(date -Iseconds)] 排障：容器运行期间可另开 SSH 查看业务日志："
+echo "  docker exec \\"$CONTAINER_NAME\\" tail -f /AppFrontend/logs/backend.log"
+echo "  docker exec \\"$CONTAINER_NAME\\" tail -f /AppFrontend/logs/queue_worker.log"
 
 # 运行容器，使用 --env-file 传递任务参数
 # 网络：WORKER_DOCKER_NETWORK_MODE=host（默认，宿主机网络）或 bridge（可配 WORKER_DOCKER_PUBLISH_PORTS）
