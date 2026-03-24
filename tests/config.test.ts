@@ -67,6 +67,8 @@ describe('config.ts', () => {
     expect(cfg.ecs.userdataDockerPolicy).toBe('auto')
     expect(cfg.ecs.requirePublicIpForTasks).toBe(true)
     expect(cfg.ecs.autoAllocatePublicIp).toBe(true)
+    expect(cfg.scheduler.scaleDownIdleMs).toBe(180000)
+    expect(cfg.scheduler.minRunningInstances).toBe(0)
   })
 
   it('WORKER_ECS_POOL_PROFILE_FILTER_ENABLED=true 时开启池 profile 筛选', () => {

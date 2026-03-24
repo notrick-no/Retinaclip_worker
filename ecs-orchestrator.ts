@@ -629,6 +629,41 @@ export class ECSOrchestrator {
   }
 
   /**
+   * 队列空闲时按需收缩池机：仅 Stop，不删除。
+   * @returns 实际停止的实例数
+   */
+  async scaleDownPoolRunningInstances(
+    poolProfile?: string,
+    minRunningInstances: number = 0,
+  ): Promise<number> {
+    if (!this.config.ecs.poolEnabled || this.shuttingDown) return 0
+
+    const prof = poolProfile?.trim() || undefined
+    const keep = Math.max(0, minRunningInstances)
+    const runningIds = await this.listAllPoolInstanceIds('Running', prof)
+    if (runningIds.length <= keep) {
+      return 0
+    }
+
+    let stopped = 0
+    const candidates = runningIds.slice(keep)
+    for (const instanceId of candidates) {
+      // 避免影响 runTask 正在使用的实例
+      if (this.runningInstances.has(instanceId)) continue
+      try {
+        await this.stopInstanceAndWait(instanceId, 'pool-scheduler-scale-down')
+        stopped++
+      } catch (error) {
+        log.warn('池机空闲收缩失败', {
+          instanceId,
+          error: error instanceof Error ? error.message : String(error),
+        })
+      }
+    }
+    return stopped
+  }
+
+  /**
    * 池机开机后：默认同 runTask 池路径的完整宿主机脚本；可被 WORKER_ECS_POOL_BOOT_COMMAND /
    * WORKER_ECS_POOL_DOCKER_CONTAINER 覆盖。
    */

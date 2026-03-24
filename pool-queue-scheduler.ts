@@ -21,6 +21,7 @@ export class PoolQueueScheduler {
   private shuttingDown = false
   private pollTimer: ReturnType<typeof setInterval> | null = null
   private pollInFlight = false
+  private lastNonEmptyAt: number = Date.now()
 
   lastMessageCount: number | null = null
   lastConsumerCount: number | null = null
@@ -123,6 +124,9 @@ export class PoolQueueScheduler {
       this.lastMessageCount = q.messageCount
       this.lastConsumerCount = q.consumerCount
       this.lastPollAt = Date.now()
+      if (q.messageCount > 0) {
+        this.lastNonEmptyAt = Date.now()
+      }
 
       log.debug('队列观测', {
         queue: this.config.rabbitmq.queue,
@@ -134,6 +138,25 @@ export class PoolQueueScheduler {
         q.messageCount,
         this.config.scheduler.poolProfile,
       )
+
+      if (q.messageCount === 0) {
+        const idleMs = Date.now() - this.lastNonEmptyAt
+        const threshold = this.config.scheduler.scaleDownIdleMs
+        if (idleMs >= threshold) {
+          const stopped = await this.orchestrator.scaleDownPoolRunningInstances(
+            this.config.scheduler.poolProfile,
+            this.config.scheduler.minRunningInstances,
+          )
+          if (stopped > 0) {
+            log.info('队列空闲，已收缩池机', {
+              stopped,
+              idleMs,
+              thresholdMs: threshold,
+              minRunningInstances: this.config.scheduler.minRunningInstances,
+            })
+          }
+        }
+      }
     } catch (error) {
       log.error('队列观测或扩缩失败', error, { queue: this.config.rabbitmq.queue })
     } finally {
@@ -149,6 +172,7 @@ export class PoolQueueScheduler {
       lastMessageCount: this.lastMessageCount,
       lastConsumerCount: this.lastConsumerCount,
       lastPollAt: this.lastPollAt,
+      idleForMs: Date.now() - this.lastNonEmptyAt,
     }
   }
 

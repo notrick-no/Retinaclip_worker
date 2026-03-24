@@ -222,6 +222,13 @@ export interface WorkerConfig {
      * 未设置时行为与编排器 findIdlePoolInstance(poolProfile 为空) 一致。
      */
     poolProfile?: string
+    /**
+     * 当队列持续空闲达到该时长后，调度器会自动 Stop 多余 Running 池机。
+     * 用于避免“任务处理完不关机”；0 表示每次空队列轮询都允许收缩。
+     */
+    scaleDownIdleMs: number
+    /** 空闲收缩时最少保留的 Running 池机数量（可用于保温机） */
+    minRunningInstances: number
   }
 
   // ===== 健康检查 =====
@@ -409,6 +416,8 @@ export function loadConfig(): WorkerConfig {
     scheduler: {
       pollIntervalMs: parseIntEnv('WORKER_SCHEDULER_POLL_INTERVAL_MS', 15000, { min: 1000 }),
       poolProfile: env('WORKER_SCHEDULER_POOL_PROFILE', '').trim() || undefined,
+      scaleDownIdleMs: parseIntEnv('WORKER_SCHEDULER_SCALE_DOWN_IDLE_MS', 180000, { min: 0 }),
+      minRunningInstances: parseIntEnv('WORKER_SCHEDULER_MIN_RUNNING_INSTANCES', 0, { min: 0 }),
     },
 
     healthCheck: {

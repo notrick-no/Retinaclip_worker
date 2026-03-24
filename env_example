@@ -89,6 +89,10 @@ WORKER_ECS_POOL_ENABLED=true
 WORKER_ECS_POOL_TAG_VALUE=pool
 # 池模式下调度轮询间隔（毫秒）；仅观测队列深度，不 prefetch、不 consume
 # WORKER_SCHEDULER_POLL_INTERVAL_MS=15000
+# 队列连续空闲多久后开始自动收缩 Running 池机（毫秒，默认 180000=3分钟）
+# WORKER_SCHEDULER_SCALE_DOWN_IDLE_MS=180000
+# 空闲收缩时最少保留几台 Running 池机（保温机），默认 0
+# WORKER_SCHEDULER_MIN_RUNNING_INSTANCES=0
 # 当 WORKER_ECS_POOL_PROFILE_FILTER_ENABLED=true 时，调度只统计/启动带该 profile 标签的池机（与任务路由 profile 对齐）
 # WORKER_SCHEDULER_POOL_PROFILE=subtitle
 # 池 profile 标签键（默认 retinaclip:pool-profile；与 WORKER_ECS_POOL_PROFILE_MAP 搭配）

@@ -30,6 +30,8 @@ function main() {
   console.log('\n── 池调度（仅 poolEnabled 时使用）──')
   console.log('  pollIntervalMs ', cfg.scheduler.pollIntervalMs)
   console.log('  poolProfile    ', cfg.scheduler.poolProfile ?? '(未设置)')
+  console.log('  idleScaleDownMs', cfg.scheduler.scaleDownIdleMs)
+  console.log('  minRunning     ', cfg.scheduler.minRunningInstances)
 
   console.log('\n── ECS ──')
   console.log('  regionId       ', cfg.ecs.regionId)
