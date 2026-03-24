@@ -82,8 +82,8 @@ WORKER_PROCESSING_IMAGE=retinaclip-processor:latest
 WORKER_MAX_INSTANCES=5
 WORKER_PREFETCH_COUNT=2
 
-# ECS「池」：为 true 时 Worker 不再消费 RabbitMQ；仅按队列深度（passive checkQueue）把 Stopped 池机启动为 Running。
-# 池内容器镜像内需自行消费 RABBITMQ_QUEUE 并 webhook。任务编排器仍可在「非池」路径用云助手跑单任务（如脚本调试）。
+# ECS「池」：为 true 时 Worker 不消费 RabbitMQ；按队列深度（checkQueue）把 Stopped 池机启动为 Running，并默认用云助手跑与 runTask 池路径相同的脚本（拉镜像、docker run）。
+# 常驻消费端建议 WORKER_POOL_BOOTSTRAP_DOCKER_DETACHED=true（默认）。非池路径仍可用 QueueConsumer + runTask。
 # 实例标签 retinaclip:lifecycle=pool（可用 WORKER_ECS_POOL_TAG_VALUE 改值）。池无可用时再新建临时实例（ephemeral）仅适用于非池消费模式。
 WORKER_ECS_POOL_ENABLED=true
 WORKER_ECS_POOL_TAG_VALUE=pool
@@ -95,6 +95,16 @@ WORKER_ECS_POOL_TAG_VALUE=pool
 # WORKER_ECS_POOL_PROFILE_TAG_KEY=retinaclip:pool-profile
 # 是否在挑选池实例时按 profile 标签过滤（默认 false：只要有 pool 生命周期标签即可，不校验镜像/规格；多业务分子池时改为 true）
 # WORKER_ECS_POOL_PROFILE_FILTER_ENABLED=true
+#
+# 池机 Stopped→Running 后默认：云助手跑与 runTask 池路径相同的脚本（NAS、docker pull、docker run）。
+# WORKER_POOL_BOOTSTRAP_DOCKER_DETACHED=true（默认）：docker run -d --restart unless-stopped，适合常驻 MQ 消费；false 则与单任务前台一致（云助手长时间阻塞）。
+# WORKER_POOL_BOOTSTRAP_MESSAGE_ID=pool-mq-worker  → 容器 retinaclip-task-pool-mq-worker；再次 bootstrap 会先删同名容器
+# WORKER_POOL_BOOTSTRAP_VIDEO_URL / WORKER_POOL_BOOTSTRAP_WEBHOOK_URL 占位（--env-file；镜像不用可忽略）
+# WORKER_POOL_BOOTSTRAP_PROCESSING_IMAGE=...       非空则覆盖默认镜像路由
+# 覆盖优先级：WORKER_ECS_POOL_BOOT_COMMAND > WORKER_ECS_POOL_DOCKER_CONTAINER > 上述默认完整脚本
+# WORKER_ECS_POOL_BOOT_DELAY_MS=20000
+# WORKER_ECS_POOL_BOOT_COMMAND=cd /opt/app && docker compose up -d
+# WORKER_ECS_POOL_DOCKER_CONTAINER=my-existing-container
 
 # 主规格无库存时依次尝试的备选规格（逗号分隔，如 gn7i 无货试 gn6i）
 # ALIYUN_ECS_INSTANCE_TYPE_FALLBACK=ecs.gn6i-c8g1.2xlarge,ecs.gn5i-c4g1.xlarge

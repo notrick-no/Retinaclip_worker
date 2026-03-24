@@ -37,6 +37,7 @@ import { WorkerConfig } from './config'
 import { generateTaskRunnerShellScript, generateUserData } from './cloud-init'
 import type { TaskParams } from './domain/task'
 import { createLogger } from './logger'
+import { resolveTaskRouting } from './task-routing'
 import { WORKER_ECS_TAGS, WORKER_HOST_PATHS } from './worker-branding'
 
 const log = createLogger('ECS')
@@ -572,8 +573,8 @@ export class ECSOrchestrator {
   }
 
   /**
-   * 池模式：根据队列中「待消费」消息数，将 Stopped 池机启动为 Running。
-   * 不执行云助手任务脚本；池内容器自行消费 MQ 并 webhook。
+   * 池模式：根据队列中「待消费」消息数，将 Stopped 池机启动为 Running，
+   * 并默认走与 runTask 池路径相同的云助手脚本（NAS、docker pull、docker run）。
    */
   async scalePoolToQueueDepth(messageCount: number, poolProfile?: string): Promise<void> {
     if (!this.config.ecs.poolEnabled || this.shuttingDown) return
@@ -606,7 +607,7 @@ export class ECSOrchestrator {
       return
     }
 
-    log.info('根据队列深度启动池机（仅 ECS Start + 公网检查，不派发单条任务）', {
+    log.info('根据队列深度启动池机（ECS Start + 公网 + 云助手：默认同 runTask 池脚本）', {
       messageCount,
       running,
       target,
@@ -620,9 +621,121 @@ export class ECSOrchestrator {
         await this.startInstance(instanceId)
         await this.waitForInstanceRunning(instanceId, 'pool-scheduler', 0)
         await this.ensureInstancePublicEgressForMq(instanceId, 'pool-scheduler', 0)
+        await this.runPoolBootHook(instanceId, prof)
       } catch (error) {
         log.error('启动池机失败', error, { instanceId, index: i })
       }
+    }
+  }
+
+  /**
+   * 池机开机后：默认同 runTask 池路径的完整宿主机脚本；可被 WORKER_ECS_POOL_BOOT_COMMAND /
+   * WORKER_ECS_POOL_DOCKER_CONTAINER 覆盖。
+   */
+  private async runPoolBootHook(instanceId: string, poolProfileHint?: string): Promise<void> {
+    if (this.config.ecs.mockProcessing) {
+      log.warn('池机云助手跳过：WORKER_MOCK_PROCESSING=true', { instanceId })
+      return
+    }
+
+    const ecs = this.config.ecs
+
+    if (ecs.poolBootCommand?.trim()) {
+      const script = ecs.poolBootCommand.trim()
+      if (ecs.poolBootDelayMs > 0) {
+        log.info('等待池机就绪后执行自定义 boot 云助手', { instanceId, delayMs: ecs.poolBootDelayMs })
+        await this.sleep(ecs.poolBootDelayMs)
+      }
+      log.info('执行 WORKER_ECS_POOL_BOOT_COMMAND', { instanceId })
+      const out = await this.runRemoteCommand(instanceId, script, { timeoutSec: 180 })
+      if (out === null) {
+        log.warn('自定义池机 boot 云助手未返回或失败', { instanceId })
+      } else {
+        log.info('自定义池机 boot 完成', { instanceId, outputTail: out.trim().slice(-800) })
+      }
+      return
+    }
+
+    if (ecs.poolDockerContainer?.trim()) {
+      const c = ecs.poolDockerContainer.trim().replace(/'/g, "'\\''")
+      const script = `set -e
+for i in $(seq 1 45); do docker info >/dev/null 2>&1 && break; sleep 2; done
+CONTAINER='${c}'
+if ! docker ps -a --format '{{.Names}}' | grep -Fxq "$CONTAINER"; then
+  echo "POOL_BOOT: container not found: $CONTAINER" >&2
+  exit 1
+fi
+exec docker start "$CONTAINER"`
+      if (ecs.poolBootDelayMs > 0) {
+        await this.sleep(ecs.poolBootDelayMs)
+      }
+      log.info('执行 docker start（WORKER_ECS_POOL_DOCKER_CONTAINER）', { instanceId, container: ecs.poolDockerContainer })
+      const out = await this.runRemoteCommand(instanceId, script, { timeoutSec: 180 })
+      if (out === null) {
+        log.warn('docker start 云助手失败', { instanceId })
+      }
+      return
+    }
+
+    await this.runPoolBootstrapSameAsRunTask(instanceId, poolProfileHint)
+  }
+
+  /**
+   * 与 runTask 复用池机时一致：清结果文件 → 云助手跑 generateTaskRunnerShellScript 全文。
+   */
+  private async runPoolBootstrapSameAsRunTask(instanceId: string, poolProfileHint?: string): Promise<void> {
+    const ecs = this.config.ecs
+    const routing = resolveTaskRouting({}, this.config)
+    let poolProfile = routing.poolProfile
+    if (ecs.poolProfileFilterEnabled && poolProfileHint?.trim()) {
+      poolProfile = poolProfileHint.trim()
+    } else if (this.config.scheduler.poolProfile?.trim()) {
+      poolProfile = this.config.scheduler.poolProfile.trim()
+    }
+
+    const taskParams: TaskParams = {
+      messageId: ecs.poolBootstrapMessageId,
+      videoDownloadUrl: ecs.poolBootstrapVideoUrl,
+      webhookUrl: ecs.poolBootstrapWebhookUrl,
+      detectType: 'auto',
+      ...(poolProfile ? { poolProfile } : {}),
+    }
+
+    const processingImage = ecs.poolBootstrapProcessingImage?.trim() || routing.processingImage
+    const detached = ecs.poolBootstrapDockerDetached
+
+    const taskScript = generateTaskRunnerShellScript(
+      taskParams,
+      this.config,
+      processingImage,
+      this.config.ecs.instanceType,
+      { dockerDetached: detached },
+    )
+
+    log.info('池机云助手：执行与 runTask 池路径同源的宿主机脚本', {
+      instanceId,
+      messageId: taskParams.messageId,
+      processingImage,
+      dockerDetached: detached,
+      resolvedFrom: routing.resolvedFrom,
+    })
+
+    if (ecs.poolBootDelayMs > 0) {
+      await this.sleep(ecs.poolBootDelayMs)
+    }
+
+    await this.runRemoteCommand(
+      instanceId,
+      `rm -f ${WORKER_HOST_PATHS.taskDone} ${WORKER_HOST_PATHS.taskResult}`,
+    )
+
+    await this.runRemoteLongRunningScript(instanceId, taskScript, taskParams.messageId, 0)
+
+    const result = await this.readTaskResultWithRetries(instanceId, taskParams.messageId, 0)
+    if (!result.success) {
+      log.error('池机 bootstrap 脚本未成功', undefined, { instanceId, error: result.error })
+    } else {
+      log.info('池机 bootstrap 脚本成功', { instanceId })
     }
   }
 
@@ -982,7 +1095,12 @@ export class ECSOrchestrator {
    * 使用 RunCommand API 在 ECS 实例上执行 shell 命令
    * 并等待命令执行结果
    */
-  private async runRemoteCommand(instanceId: string, command: string): Promise<string | null> {
+  private async runRemoteCommand(
+    instanceId: string,
+    command: string,
+    options?: { timeoutSec?: number },
+  ): Promise<string | null> {
+    const timeoutSec = options?.timeoutSec ?? 30
     try {
       // 发送命令
       const runRequest = new $ECS.RunCommandRequest({
@@ -990,7 +1108,7 @@ export class ECSOrchestrator {
         type: 'RunShellScript',
         commandContent: command,
         instanceId: [instanceId],
-        timeout: 30,
+        timeout: timeoutSec,
       })
 
       const runtime = new $Util.RuntimeOptions({})
@@ -1004,7 +1122,8 @@ export class ECSOrchestrator {
       // 等待命令执行完成
       await this.sleep(3000) // 等 3 秒
 
-      for (let attempt = 0; attempt < 5; attempt++) {
+      const maxAttempts = Math.max(8, Math.ceil((timeoutSec + 25) / 2))
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
         const resultRequest = new $ECS.DescribeInvocationResultsRequest({
           regionId: this.config.ecs.regionId,
           invokeId,

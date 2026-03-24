@@ -116,6 +116,27 @@ export interface WorkerConfig {
      */
     poolProfileFilterEnabled: boolean
     /**
+     * 池调度把 Stopped→Running 后，可选经云助手执行的自定义 Shell（最高优先级）。
+     */
+    poolBootCommand?: string
+    /**
+     * 若设置且未配置 poolBootCommand：仅执行 `docker start <name>`（不跑完整拉镜像脚本）。
+     */
+    poolDockerContainer?: string
+    /** 执行池机云助手（boot / 完整脚本）前等待毫秒，与 runTask 池路径的 20s 对齐 */
+    poolBootDelayMs: number
+    /** 池机完整脚本里 TaskParams.messageId，容器名 `retinaclip-task-<该值>`；再次 bootstrap 会先 docker rm 同名容器 */
+    poolBootstrapMessageId: string
+    poolBootstrapVideoUrl: string
+    poolBootstrapWebhookUrl: string
+    /** 非空时覆盖 resolveTaskRouting 默认镜像 */
+    poolBootstrapProcessingImage?: string
+    /**
+     * true：池调度使用 `docker run -d`（与 runTask 同源脚本，但后台常驻）。
+     * false：与 runTask 完全一致的前台容器（云助手会阻塞到容器退出）。
+     */
+    poolBootstrapDockerDetached: boolean
+    /**
      * 在 `ALIYUN_ECS_INSTANCE_TYPE` 之后依次尝试的规格（逗号分隔），用于库存不足降级。
      */
     instanceTypeFallback: string[]
@@ -341,6 +362,16 @@ export function loadConfig(): WorkerConfig {
         env('WORKER_ECS_POOL_PROFILE_TAG_KEY', DEFAULT_POOL_PROFILE_TAG_KEY).trim() ||
         DEFAULT_POOL_PROFILE_TAG_KEY,
       poolProfileFilterEnabled: parseBoolEnv('WORKER_ECS_POOL_PROFILE_FILTER_ENABLED', false),
+      poolBootCommand: env('WORKER_ECS_POOL_BOOT_COMMAND', '').trim() || undefined,
+      poolDockerContainer: env('WORKER_ECS_POOL_DOCKER_CONTAINER', '').trim() || undefined,
+      poolBootDelayMs: parseIntEnv('WORKER_ECS_POOL_BOOT_DELAY_MS', 20000, { min: 0 }),
+      poolBootstrapMessageId: env('WORKER_POOL_BOOTSTRAP_MESSAGE_ID', 'pool-mq-worker').trim() || 'pool-mq-worker',
+      poolBootstrapVideoUrl:
+        env('WORKER_POOL_BOOTSTRAP_VIDEO_URL', '').trim() || 'about:blank',
+      poolBootstrapWebhookUrl:
+        env('WORKER_POOL_BOOTSTRAP_WEBHOOK_URL', '').trim() || 'http://127.0.0.1:9/pool-bootstrap',
+      poolBootstrapProcessingImage: env('WORKER_POOL_BOOTSTRAP_PROCESSING_IMAGE', '').trim() || undefined,
+      poolBootstrapDockerDetached: parseBoolEnv('WORKER_POOL_BOOTSTRAP_DOCKER_DETACHED', true),
       instanceTypeFallback,
       userdataDockerPolicy: parseEnumEnv<'auto' | 'require_host'>('WORKER_ECS_USERDATA_DOCKER_POLICY', {
         defaultValue: 'auto',

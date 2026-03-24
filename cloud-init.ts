@@ -215,13 +215,23 @@ export function generateUserData(
  * - 新建实例：经 {@link generateUserData} Base64 注入，开机由 cloud-init 执行。
  * - 池内实例：停机再开机后 UserData 通常不会再次执行，需由编排器通过云助手下发同一脚本。
  */
+/** 宿主机脚本选项（与 runTask 云助手同源） */
+export interface TaskRunnerShellOptions {
+  /**
+   * true：`docker run -d --restart unless-stopped`，宿主机脚本立即写 SUCCESS（适合池内常驻 MQ 消费端）。
+   * false：与历史一致，前台跑容器直至退出后再收集结果（同单任务 runTask）。
+   */
+  dockerDetached?: boolean
+}
+
 export function generateTaskRunnerShellScript(
   task: TaskParams,
   config: WorkerConfig,
   processingImage: string,
   hostInstanceTypeForGpu?: string,
+  options?: TaskRunnerShellOptions,
 ): string {
-  return generateStartupScript(task, config, processingImage, hostInstanceTypeForGpu)
+  return generateStartupScript(task, config, processingImage, hostInstanceTypeForGpu, options)
 }
 
 /**
@@ -232,11 +242,12 @@ function generateStartupScript(
   config: WorkerConfig,
   processingImage: string,
   hostInstanceTypeForGpu?: string,
+  scriptOpts?: TaskRunnerShellOptions,
 ): string {
   if (config.ecs.mockProcessing) {
     return generateMockStartupScript(task, config)
   }
-  return generateDockerStartupScript(task, config, processingImage, hostInstanceTypeForGpu)
+  return generateDockerStartupScript(task, config, processingImage, hostInstanceTypeForGpu, scriptOpts)
 }
 
 /**
@@ -315,7 +326,9 @@ function generateDockerStartupScript(
   config: WorkerConfig,
   processingImage: string,
   hostInstanceTypeForGpu?: string,
+  scriptOpts?: TaskRunnerShellOptions,
 ): string {
+  const dockerDetached = scriptOpts?.dockerDetached === true
   // 转义 shell 特殊字符
   const esc = (s: string) => s.replace(/'/g, "'\\''")
   const H = WORKER_HOST_PATHS
@@ -632,7 +645,30 @@ if [ "$USE_GPU_BY_TYPE" = "1" ]; then
     echo "[$(date -Iseconds)] WARN: 检测不到 NVIDIA 设备/驱动，跳过 --gpus all"
   fi
 fi
-docker run \\
+${dockerDetached ? `# 池调度/bootstrap：后台常驻容器，宿主机脚本不必等待容器进程退出
+docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
+echo "[$(date -Iseconds)] docker run -d --restart unless-stopped（池机常驻模式）"
+set +e
+CONTAINER_ID=$(docker run -d --restart unless-stopped \\
+  --name "$CONTAINER_NAME" \\
+  --env-file ${H.taskEnv} \\
+${dockerRunMidBlock}  --tmpfs /tmp:rw,noexec,nosuid,size=4g \\
+  --memory=${Math.floor(config.ecs.maxInstances > 1 ? 8 : 16)}g \\
+  --cpus=${config.ecs.maxInstances > 1 ? 4 : 8} \\
+  $GPU_RUN_OPTS \\
+  ${dockerRunImageTail})
+RUN_EC=$?
+set -e
+if [ "$RUN_EC" -ne 0 ] || [ -z "$CONTAINER_ID" ]; then
+  echo "[$(date -Iseconds)] ERROR: docker run -d 失败 ec=$RUN_EC id=$CONTAINER_ID"
+  echo '{"success":false,"error":"docker run -d failed"}' > "$RESULT_FILE"
+  echo "FAILED" > "$DONE_FILE"
+  exit 1
+fi
+echo "[$(date -Iseconds)] detached 容器已创建: $CONTAINER_ID"
+echo '{"success":true,"pool_detached":true,"container_id":"'"$CONTAINER_ID"'"}' > "$RESULT_FILE"
+echo "SUCCESS" > "$DONE_FILE"
+` : `docker run \\
   --name "$CONTAINER_NAME" \\
   --env-file ${H.taskEnv} \\
 ${dockerRunMidBlock}  --tmpfs /tmp:rw,noexec,nosuid,size=4g \\
@@ -675,6 +711,7 @@ else
   echo "FAILED" > "$DONE_FILE"
   echo "[$(date -Iseconds)] ERROR: 容器执行失败"
 fi
+`}
 
 # ---------------------------------------------------------
 # 6. 清理敏感文件
