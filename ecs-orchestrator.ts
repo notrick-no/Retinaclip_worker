@@ -519,31 +519,124 @@ export class ECSOrchestrator {
   }
 
   /**
+   * DescribeInstances 用的池标签条件（与 findIdlePoolInstance / 池调度一致）。
+   */
+  private poolDescribeTags(poolProfile?: string): $ECS.DescribeInstancesRequestTag[] {
+    const tags = [
+      new $ECS.DescribeInstancesRequestTag({
+        key: WORKER_ECS_TAGS.lifecycle,
+        value: this.config.ecs.poolLifecycleTagValue,
+      }),
+    ]
+    if (this.config.ecs.poolProfileFilterEnabled && poolProfile?.trim()) {
+      tags.push(
+        new $ECS.DescribeInstancesRequestTag({
+          key: this.config.ecs.poolProfileTagKey,
+          value: poolProfile.trim(),
+        }),
+      )
+    }
+    return tags
+  }
+
+  /**
+   * 列出符合池标签的实例 ID（分页）。
+   */
+  private async listAllPoolInstanceIds(
+    status: 'Running' | 'Stopped',
+    poolProfile?: string,
+  ): Promise<string[]> {
+    const tags = this.poolDescribeTags(poolProfile)
+    const runtime = new $Util.RuntimeOptions({})
+    const ids: string[] = []
+    let page = 1
+    for (;;) {
+      const request = new $ECS.DescribeInstancesRequest({
+        regionId: this.config.ecs.regionId,
+        status,
+        pageNumber: page,
+        pageSize: 50,
+        tag: tags,
+      })
+      const response = await this.client.describeInstancesWithOptions(request, runtime)
+      const batch = response.body?.instances?.instance || []
+      for (const i of batch) {
+        if (i.instanceId) ids.push(i.instanceId)
+      }
+      const total = response.body?.totalCount ?? 0
+      if (ids.length >= total || batch.length === 0) break
+      page++
+      if (page > 100) break
+    }
+    return ids
+  }
+
+  /**
+   * 池模式：根据队列中「待消费」消息数，将 Stopped 池机启动为 Running。
+   * 不执行云助手任务脚本；池内容器自行消费 MQ 并 webhook。
+   */
+  async scalePoolToQueueDepth(messageCount: number, poolProfile?: string): Promise<void> {
+    if (!this.config.ecs.poolEnabled || this.shuttingDown) return
+
+    const prof = poolProfile?.trim() || undefined
+    const runningIds = await this.listAllPoolInstanceIds('Running', prof)
+    const running = runningIds.length
+    const target = Math.min(this.config.ecs.maxInstances, Math.max(0, messageCount))
+    const need = target - running
+    if (need <= 0) {
+      log.debug('池机数量已满足当前队列深度策略', {
+        messageCount,
+        running,
+        target,
+        poolProfile: prof ?? '(none)',
+      })
+      return
+    }
+
+    const stoppedIds = await this.listAllPoolInstanceIds('Stopped', prof)
+    const toStart = Math.min(need, stoppedIds.length)
+    if (toStart <= 0) {
+      log.warn('队列需要更多池机但无 Stopped 实例可启', {
+        need,
+        stoppedAvailable: stoppedIds.length,
+        messageCount,
+        running,
+        poolProfile: prof ?? '(none)',
+      })
+      return
+    }
+
+    log.info('根据队列深度启动池机（仅 ECS Start + 公网检查，不派发单条任务）', {
+      messageCount,
+      running,
+      target,
+      starting: toStart,
+      poolProfile: prof ?? '(none)',
+    })
+
+    for (let i = 0; i < toStart; i++) {
+      const instanceId = stoppedIds[i]!
+      try {
+        await this.startInstance(instanceId)
+        await this.waitForInstanceRunning(instanceId, 'pool-scheduler', 0)
+        await this.ensureInstancePublicEgressForMq(instanceId, 'pool-scheduler', 0)
+      } catch (error) {
+        log.error('启动池机失败', error, { instanceId, index: i })
+      }
+    }
+  }
+
+  /**
    * 查找池内空闲实例：已停止 + retinaclip:lifecycle 池标签（不校验镜像/规格是否与配置一致）。
    * 若 poolProfileFilterEnabled 且任务带 poolProfile，再要求 poolProfileTagKey 匹配。
    */
   private async findIdlePoolInstance(poolProfile?: string): Promise<string | null> {
     try {
-      const tags = [
-        new $ECS.DescribeInstancesRequestTag({
-            key: WORKER_ECS_TAGS.lifecycle,
-            value: this.config.ecs.poolLifecycleTagValue,
-          }),
-      ]
-      if (this.config.ecs.poolProfileFilterEnabled && poolProfile?.trim()) {
-        tags.push(
-          new $ECS.DescribeInstancesRequestTag({
-            key: this.config.ecs.poolProfileTagKey,
-            value: poolProfile.trim(),
-          }),
-        )
-      }
-
       const request = new $ECS.DescribeInstancesRequest({
         regionId: this.config.ecs.regionId,
         status: 'Stopped',
         pageSize: 50,
-        tag: tags,
+        tag: this.poolDescribeTags(poolProfile),
       })
       const runtime = new $Util.RuntimeOptions({})
       const response = await this.client.describeInstancesWithOptions(request, runtime)

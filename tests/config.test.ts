@@ -57,6 +57,8 @@ describe('config.ts', () => {
     expect(cfg.processing.defaultImage).toBe('retinaclip-processor:latest')
     expect(cfg.ecs.poolProfileTagKey).toBe('retinaclip:pool-profile')
     expect(cfg.ecs.poolProfileFilterEnabled).toBe(false)
+    expect(cfg.scheduler.pollIntervalMs).toBe(15000)
+    expect(cfg.scheduler.poolProfile).toBeUndefined()
     expect(cfg.ecs.userdataDockerPolicy).toBe('auto')
     expect(cfg.ecs.requirePublicIpForTasks).toBe(true)
     expect(cfg.ecs.autoAllocatePublicIp).toBe(true)

@@ -192,6 +192,17 @@ export interface WorkerConfig {
     maxInterval: number
   }
 
+  // ===== 池模式调度（只观测队列深度，不消费消息）=====
+  scheduler: {
+    /** 轮询 RabbitMQ 队列深度间隔 (ms)，仅 passive checkQueue */
+    pollIntervalMs: number
+    /**
+     * 与 WORKER_ECS_POOL_PROFILE_FILTER_ENABLED 配合：只统计/启动带该 pool profile 标签的池机。
+     * 未设置时行为与编排器 findIdlePoolInstance(poolProfile 为空) 一致。
+     */
+    poolProfile?: string
+  }
+
   // ===== 健康检查 =====
   healthCheck: {
     /** 健康检查间隔 (ms) */
@@ -362,6 +373,11 @@ export function loadConfig(): WorkerConfig {
       maxAttempts: parseIntEnv('WORKER_RETRY_MAX_ATTEMPTS', 3, { min: 0 }),
       baseInterval: parseIntEnv('WORKER_RETRY_BASE_INTERVAL', 5000, { min: 0 }),
       maxInterval: parseIntEnv('WORKER_RETRY_MAX_INTERVAL', 60000, { min: 0 }),
+    },
+
+    scheduler: {
+      pollIntervalMs: parseIntEnv('WORKER_SCHEDULER_POLL_INTERVAL_MS', 15000, { min: 1000 }),
+      poolProfile: env('WORKER_SCHEDULER_POOL_PROFILE', '').trim() || undefined,
     },
 
     healthCheck: {

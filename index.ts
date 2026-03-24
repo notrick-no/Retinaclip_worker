@@ -10,7 +10,9 @@
  * ┌─────────────────────────────────────────────────────────┐
  * │                     Worker 架构                          │
  * │                                                          │
- * │   RabbitMQ ──► QueueConsumer ──► ECSOrchestrator         │
+ * │   池模式：RabbitMQ checkQueue ─► PoolQueueScheduler ─► ECSOrchestrator │
+ * │          （不消费）     仅按队列深度启动 Stopped 池机                    │
+ * │   非池：RabbitMQ ──► QueueConsumer ──► ECSOrchestrator（每消息一台任务） │
  * │                     │                │                    │
  * │                     │          ┌─────┼──────┐            │
  * │                     │          │ ECS 实例 1  │            │
@@ -18,12 +20,9 @@
  * │                     │          │  ...        │            │
  * │                     │          └─────┼──────┘            │
  * │                     │                │                    │
- * │                     │          cloud-init 脚本            │
- * │                     │          ↓ 拉取算法镜像             │
- * │                     │          ↓ 启动处理容器             │
- * │                     │          ↓ 处理完成标记             │
- * │                     │                │                    │
- * │                     └── Webhook ─────┘                    │
+ * │                     │          cloud-init / 池内容器       │
+ * │                     │          （池内镜像自消费 MQ + webhook）          │
+ * │                     └── Webhook ─────┘（非池编排路径）      │
  * │                          │                                │
  * │                     Next.js App                           │
  * └─────────────────────────────────────────────────────────┘
@@ -39,12 +38,14 @@ import type { WorkerConfig } from './config'
 import { loadConfig } from './config'
 import { ECSOrchestrator } from './ecs-orchestrator'
 import { QueueConsumer } from './queue-consumer'
+import { PoolQueueScheduler } from './pool-queue-scheduler'
 import { createLogger, setLogLevel } from './logger'
 
 const log = createLogger('Main')
 
 // ===== 全局状态 =====
 let consumer: QueueConsumer | null = null
+let poolScheduler: PoolQueueScheduler | null = null
 let orchestrator: ECSOrchestrator | null = null
 let healthCheckTimer: NodeJS.Timeout | null = null
 let zombieCheckTimer: NodeJS.Timeout | null = null
@@ -66,6 +67,8 @@ async function main() {
   log.info('配置信息', {
     queue: config.rabbitmq.queue,
     prefetch: config.rabbitmq.prefetchCount,
+    poolModeScheduler: config.ecs.poolEnabled,
+    schedulerPollMs: config.scheduler.pollIntervalMs,
     maxInstances: config.ecs.maxInstances,
     region: config.ecs.regionId,
     instanceType: config.ecs.instanceType,
@@ -86,26 +89,47 @@ async function main() {
   orchestrator = new ECSOrchestrator(config)
   await orchestrator.initialize()
 
-  // 3. 初始化队列消费者
-  log.info('初始化队列消费者...')
-  consumer = new QueueConsumer(config, orchestrator)
-  await consumer.start()
+  // 3. 池模式：只观测队列深度并启动池机；非池模式：消费队列并编排每任务 ECS
+  if (config.ecs.poolEnabled) {
+    log.info('池模式：初始化队列深度调度（不消费消息）...')
+    poolScheduler = new PoolQueueScheduler(config, orchestrator)
+    await poolScheduler.start()
+  } else {
+    log.info('初始化队列消费者...')
+    consumer = new QueueConsumer(config, orchestrator)
+    await consumer.start()
+  }
 
   // 4. 启动健康检查
   healthCheckTimer = setInterval(() => {
     const ecsStatus = orchestrator!.getStatus()
-    const consumerStatus = consumer!.getStatus()
 
-    log.info('健康检查', {
-      ecs: {
-        active: `${ecsStatus.activeSlots}/${ecsStatus.maxSlots}`,
-        running: ecsStatus.runningInstances,
-      },
-      consumer: {
-        connected: consumerStatus.connected,
-        processing: consumerStatus.processingCount,
-      },
-    })
+    if (poolScheduler) {
+      const s = poolScheduler.getStatus()
+      log.info('健康检查', {
+        ecs: {
+          active: `${ecsStatus.activeSlots}/${ecsStatus.maxSlots}`,
+          running: ecsStatus.runningInstances,
+        },
+        poolScheduler: {
+          connected: s.connected,
+          queueMessages: s.lastMessageCount,
+          queueConsumers: s.lastConsumerCount,
+        },
+      })
+    } else if (consumer) {
+      const consumerStatus = consumer.getStatus()
+      log.info('健康检查', {
+        ecs: {
+          active: `${ecsStatus.activeSlots}/${ecsStatus.maxSlots}`,
+          running: ecsStatus.runningInstances,
+        },
+        consumer: {
+          connected: consumerStatus.connected,
+          processing: consumerStatus.processingCount,
+        },
+      })
+    }
   }, config.healthCheck.interval)
 
   // 5. 启动僵尸实例清理
@@ -119,7 +143,11 @@ async function main() {
   setupSignalHandlers(config)
 
   log.info('═══════════════════════════════════════════════')
-  log.info('  Worker 已就绪，等待任务...')
+  log.info(
+    config.ecs.poolEnabled
+      ? '  Worker 已就绪（池模式：按队列深度启停池机，消息由池内容器消费）...'
+      : '  Worker 已就绪，等待任务...',
+  )
   log.info('═══════════════════════════════════════════════')
 }
 
@@ -150,9 +178,12 @@ function setupSignalHandlers(config: WorkerConfig) {
     }, graceMs)
 
     try {
-      // 1. 停止消费新消息 + 在 graceMs 内等待处理中的任务
+      // 1. 停止消费 / 关闭调度 RabbitMQ + 在 graceMs 内等待处理中的任务（仅非池消费者）
       if (consumer) {
         await consumer.shutdown(graceMs)
+      }
+      if (poolScheduler) {
+        await poolScheduler.shutdown()
       }
 
       // 2. 关闭 ECS 编排器（等待/强制释放实例，同样受 graceMs 约束）

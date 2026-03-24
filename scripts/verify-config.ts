@@ -27,6 +27,10 @@ function main() {
   console.log('  queue          ', cfg.rabbitmq.queue)
   console.log('  prefetchCount  ', cfg.rabbitmq.prefetchCount)
 
+  console.log('\n── 池调度（仅 poolEnabled 时使用）──')
+  console.log('  pollIntervalMs ', cfg.scheduler.pollIntervalMs)
+  console.log('  poolProfile    ', cfg.scheduler.poolProfile ?? '(未设置)')
+
   console.log('\n── ECS ──')
   console.log('  regionId       ', cfg.ecs.regionId)
   console.log('  zoneId         ', cfg.ecs.zoneId || '(未设置)')

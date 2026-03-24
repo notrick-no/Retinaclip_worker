@@ -82,10 +82,15 @@ WORKER_PROCESSING_IMAGE=retinaclip-processor:latest
 WORKER_MAX_INSTANCES=5
 WORKER_PREFETCH_COUNT=2
 
-# ECS「池」：为 true 时优先启动已停止的池实例（实例标签 retinaclip:lifecycle=pool，可用 WORKER_ECS_POOL_TAG_VALUE 改值）；
-# 任务结束只 Stop，不释放。池无可用时再新建临时实例（标签 retinaclip:lifecycle=ephemeral），任务结束 Delete。
+# ECS「池」：为 true 时 Worker 不再消费 RabbitMQ；仅按队列深度（passive checkQueue）把 Stopped 池机启动为 Running。
+# 池内容器镜像内需自行消费 RABBITMQ_QUEUE 并 webhook。任务编排器仍可在「非池」路径用云助手跑单任务（如脚本调试）。
+# 实例标签 retinaclip:lifecycle=pool（可用 WORKER_ECS_POOL_TAG_VALUE 改值）。池无可用时再新建临时实例（ephemeral）仅适用于非池消费模式。
 WORKER_ECS_POOL_ENABLED=true
 WORKER_ECS_POOL_TAG_VALUE=pool
+# 池模式下调度轮询间隔（毫秒）；仅观测队列深度，不 prefetch、不 consume
+# WORKER_SCHEDULER_POLL_INTERVAL_MS=15000
+# 当 WORKER_ECS_POOL_PROFILE_FILTER_ENABLED=true 时，调度只统计/启动带该 profile 标签的池机（与任务路由 profile 对齐）
+# WORKER_SCHEDULER_POOL_PROFILE=subtitle
 # 池 profile 标签键（默认 retinaclip:pool-profile；与 WORKER_ECS_POOL_PROFILE_MAP 搭配）
 # WORKER_ECS_POOL_PROFILE_TAG_KEY=retinaclip:pool-profile
 # 是否在挑选池实例时按 profile 标签过滤（默认 false：只要有 pool 生命周期标签即可，不校验镜像/规格；多业务分子池时改为 true）
