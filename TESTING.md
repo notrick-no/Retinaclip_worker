@@ -63,7 +63,8 @@ npm run pool -- subtitle
 
 该脚本会在调度器上直接调用 `ECSOrchestrator.runTask()`：
 - 调度器分配任务到池机（优先复用池）
-- 池机内执行：NAS 自动挂载 `/mnt`、`docker pull`、`docker run`、写入结果文件
+- 池机内执行：NAS 自动挂载、`docker pull`、`docker run`、写入结果文件  
+  - 若你手动启动依赖 `-v /mnt/DiffuEraser/...:/DiffuEraser` 与 `./deploy.sh`，请在调度器 `.env` 设置 `WORKER_DOCKER_VOLUME_HOST`、`WORKER_DOCKER_BASH_COMMAND`（见 `env_example`）；`--network host` 下一般无需 `-p`。
 - 调度器侧拿到 `TaskResult` 并打印成功/失败信息（失败时会给出错误原因）
 
 脚本：

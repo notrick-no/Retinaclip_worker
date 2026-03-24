@@ -53,6 +53,17 @@ WORKER_PROCESSING_IMAGE=retinaclip-processor:latest
 # WORKER_DOCKER_REGISTRY_PASSWORD=***
 # WORKER_DOCKER_REGISTRY_SERVER=172.16.0.70:5000
 
+# ========== 池机 docker run（与手动命令对齐）==========
+# 网络：host（默认，历史行为）或 bridge（配合下面端口映射，贴近 docker run -p ...）
+# WORKER_DOCKER_NETWORK_MODE=host
+# bridge 时生效，逗号分隔，例如：8080:8080,6006:6006,5000:5000
+# WORKER_DOCKER_PUBLISH_PORTS=
+# 宿主机目录绑定进容器（如 NAS 挂载后的 DiffuEraser）；留空则不加 -v
+# WORKER_DOCKER_VOLUME_HOST=/mnt/DiffuEraser/DiffuEraser/
+# WORKER_DOCKER_VOLUME_CONTAINER=/DiffuEraser
+# 非空时在镜像后追加：/bin/bash -c '<值>'（等价于手动命令里的 ./deploy.sh）
+# WORKER_DOCKER_BASH_COMMAND=./deploy.sh
+
 # ========== NAS 挂载（NFS） ==========
 # 用于宿主机启动时自动挂载 NAS 到 /mnt
 # 注意：挂载点域名要填 NAS 控制台给的“挂载目标/挂载点”域名或 IP（不要填 ECS 实例 ID）。

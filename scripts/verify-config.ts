@@ -51,6 +51,18 @@ function main() {
       ? cfg.ecs.dockerInsecureRegistries.join(', ')
       : '(无，仍会从镜像 host:port 自动推断)',
   )
+  console.log('  dockerNetwork   ', cfg.ecs.dockerNetworkMode)
+  console.log(
+    '  dockerPublish   ',
+    cfg.ecs.dockerPublishPorts.length ? cfg.ecs.dockerPublishPorts.join(', ') : '(无)',
+  )
+  console.log(
+    '  dockerVolume    ',
+    cfg.ecs.dockerVolumeHost
+      ? `${cfg.ecs.dockerVolumeHost} -> ${cfg.ecs.dockerVolumeContainer}`
+      : '(无)',
+  )
+  console.log('  dockerBashCmd   ', cfg.ecs.dockerBashCommand || '(镜像默认 CMD)')
 
   console.log('\n── 处理镜像路由 ──')
   console.log('  defaultImage   ', cfg.processing.defaultImage)

@@ -136,6 +136,25 @@ export interface WorkerConfig {
     nasMountPoint: string
     /** NAS ID：仅用于日志定位 */
     nasId: string
+    /**
+     * 池机 `docker run` 网络模式：`host`（默认，与历史行为一致）或 `bridge`（可配合端口映射，贴近手动 `-p` 示例）。
+     */
+    dockerNetworkMode: 'host' | 'bridge'
+    /**
+     * 仅 `dockerNetworkMode=bridge` 时写入 `-p`；每项形如 `8080:8080`（环境变量逗号分隔）。
+     */
+    dockerPublishPorts: string[]
+    /**
+     * 宿主机待挂载目录（如 NAS 下的 DiffuEraser）；空字符串表示不加 `-v`。
+     */
+    dockerVolumeHost: string
+    /** 与 dockerVolumeHost 对应的容器内路径，默认 `/DiffuEraser` */
+    dockerVolumeContainer: string
+    /**
+     * 非空时在镜像名后追加 `/bin/bash -c '<本字段>'`（与手动 `docker run ... /bin/bash -c "./deploy.sh"` 一致）；
+     * 空则使用镜像默认 ENTRYPOINT/CMD。
+     */
+    dockerBashCommand?: string
   }
 
   // ===== Webhook 回调配置 =====
@@ -238,6 +257,19 @@ export function loadConfig(): WorkerConfig {
   const nasMountPoint = env('WORKER_NAS_MOUNT_POINT', '/mnt').trim() || '/mnt'
   const nasId = env('WORKER_NAS_ID', '3e41f4bcd1').trim() || '3e41f4bcd1'
 
+  const dockerNetworkMode = parseEnumEnv<'host' | 'bridge'>('WORKER_DOCKER_NETWORK_MODE', {
+    defaultValue: 'host',
+    allowed: ['host', 'bridge'],
+  })
+  const dockerPublishPorts = env('WORKER_DOCKER_PUBLISH_PORTS', '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+  const dockerVolumeHost = env('WORKER_DOCKER_VOLUME_HOST', '').trim()
+  const dockerVolumeContainer = env('WORKER_DOCKER_VOLUME_CONTAINER', '/DiffuEraser').trim() || '/DiffuEraser'
+  const dockerBashCommandRaw = env('WORKER_DOCKER_BASH_COMMAND', '').trim()
+  const dockerBashCommand = dockerBashCommandRaw || undefined
+
   return {
     processing: {
       defaultImage: defaultProcessingImage,
@@ -297,6 +329,11 @@ export function loadConfig(): WorkerConfig {
       nasExportPath,
       nasMountPoint,
       nasId,
+      dockerNetworkMode,
+      dockerPublishPorts,
+      dockerVolumeHost,
+      dockerVolumeContainer,
+      dockerBashCommand,
     },
 
     webhook: {

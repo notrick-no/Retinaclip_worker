@@ -334,6 +334,27 @@ function generateDockerStartupScript(
     config.ecs.dockerRegistryUsername && config.ecs.dockerRegistryPassword && loginServer,
   )
 
+  const netMode = config.ecs.dockerNetworkMode
+  const publishPorts = config.ecs.dockerPublishPorts ?? []
+  const volHost = (config.ecs.dockerVolumeHost ?? '').trim()
+  const volContainer = (config.ecs.dockerVolumeContainer ?? '/DiffuEraser').trim() || '/DiffuEraser'
+  const bashC = (config.ecs.dockerBashCommand ?? '').trim()
+
+  const dockerRunNetworkAndPublishLines: string[] = []
+  if (netMode === 'host') {
+    dockerRunNetworkAndPublishLines.push('  --network host \\')
+  }
+  if (netMode === 'bridge' && publishPorts.length > 0) {
+    for (const p of publishPorts) {
+      dockerRunNetworkAndPublishLines.push(`  -p '${esc(p)}' \\`)
+    }
+  }
+  const dockerRunVolumeLine =
+    volHost.length > 0 ? `  -v '${esc(volHost)}:${esc(volContainer)}' \\` : ''
+  const dockerRunImageTail = bashC.length > 0 ? `"$IMAGE" /bin/bash -c '${esc(bashC)}'` : `"$IMAGE"`
+  const dockerRunMidLines = [...dockerRunNetworkAndPublishLines, ...(volHost.length ? [dockerRunVolumeLine] : [])]
+  const dockerRunMidBlock = dockerRunMidLines.length > 0 ? `${dockerRunMidLines.join('\n')}\n` : ''
+
   const insecureRegistryShellBlock =
     insecureRegs.length === 0
       ? `echo "[$(date -Iseconds)] 无需合并 Docker insecure-registries（非 host:port 私有仓或列表为空）"
@@ -593,8 +614,9 @@ echo "[$(date -Iseconds)] 启动处理容器..."
 CONTAINER_NAME="retinaclip-task-${task.messageId}"
 
 # 运行容器，使用 --env-file 传递任务参数
-# --rm: 容器退出后自动删除
-# --network host: 使用宿主机网络（方便访问 webhook）
+# 网络：WORKER_DOCKER_NETWORK_MODE=host（默认，宿主机网络）或 bridge（可配 WORKER_DOCKER_PUBLISH_PORTS）
+# 卷：WORKER_DOCKER_VOLUME_HOST 非空时增加 -v host:container（如 DiffuEraser）
+# 启动命令：WORKER_DOCKER_BASH_COMMAND 非空时追加 /bin/bash -c '...'（如 ./deploy.sh）
 # GPU 参数在运行时二次校验：仅当实例类型推断为 GPU（useGpuFlag）且宿主机存在 /dev/nvidia* 或 nvidia-smi 时才启用。
 USE_GPU_BY_TYPE='${useGpuFlag ? '1' : '0'}'
 GPU_RUN_OPTS=''
@@ -608,12 +630,11 @@ fi
 docker run \\
   --name "$CONTAINER_NAME" \\
   --env-file ${H.taskEnv} \\
-  --network host \\
-  --tmpfs /tmp:rw,noexec,nosuid,size=4g \\
+${dockerRunMidBlock}  --tmpfs /tmp:rw,noexec,nosuid,size=4g \\
   --memory=${Math.floor(config.ecs.maxInstances > 1 ? 8 : 16)}g \\
   --cpus=${config.ecs.maxInstances > 1 ? 4 : 8} \\
   $GPU_RUN_OPTS \\
-  "$IMAGE" \\
+  ${dockerRunImageTail} \\
   > ${H.containerStdout} 2> ${H.containerStderr}
 #
 # 调试/排障期间不自动移除容器（避免丢失容器对象，方便 docker ps / logs / inspect）。
