@@ -117,6 +117,8 @@ describe('queue-consumer.ts', () => {
         dockerPublishPorts: [],
         dockerVolumeHost: '',
         dockerVolumeContainer: '/DiffuEraser',
+        requirePublicIpForTasks: true,
+        autoAllocatePublicIp: true,
       },
       webhook: {
         secret: 'wh-secret',
@@ -245,6 +247,8 @@ describe('queue-consumer.ts', () => {
         dockerPublishPorts: [],
         dockerVolumeHost: '',
         dockerVolumeContainer: '/DiffuEraser',
+        requirePublicIpForTasks: true,
+        autoAllocatePublicIp: true,
       },
       webhook: {
         secret: 'wh-secret',

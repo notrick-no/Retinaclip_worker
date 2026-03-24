@@ -58,6 +58,8 @@ describe('config.ts', () => {
     expect(cfg.ecs.poolProfileTagKey).toBe('retinaclip:pool-profile')
     expect(cfg.ecs.poolProfileFilterEnabled).toBe(false)
     expect(cfg.ecs.userdataDockerPolicy).toBe('auto')
+    expect(cfg.ecs.requirePublicIpForTasks).toBe(true)
+    expect(cfg.ecs.autoAllocatePublicIp).toBe(true)
   })
 
   it('WORKER_ECS_POOL_PROFILE_FILTER_ENABLED=true 时开启池 profile 筛选', () => {

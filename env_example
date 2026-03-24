@@ -106,8 +106,13 @@ ALIYUN_ECS_SPOT_STRATEGY=SpotAsPriceGo
 # 仅 SpotWithPriceLimit 才需要
 # ALIYUN_ECS_SPOT_PRICE_LIMIT=0.5
 
-# 带宽（可选）
+# 带宽（可选；新建临时实例用；池机若为 0 且无公网 IP，可配合下面自动分配）
 ALIYUN_ECS_BANDWIDTH_OUT=100
+
+# 实例 Running 后是否要求具备公网 IP 或 EIP（访问公网 RabbitMQ 时建议 true）
+WORKER_ECS_REQUIRE_PUBLIC_IP=true
+# 无公网 IP 时是否调用阿里云 API 自动升带宽并分配公网 IP（需余额/权限；MQ 在 VPC 内可关）
+WORKER_ECS_AUTO_ALLOCATE_PUBLIC_IP=true
 
 # 系统盘（可选）
 ALIYUN_ECS_SYSTEM_DISK_SIZE=40

@@ -229,6 +229,7 @@ export class ECSOrchestrator {
 
           await this.startInstance(instanceId)
           await this.waitForInstanceRunning(instanceId, taskParams.messageId, attempt)
+          await this.ensureInstancePublicEgressForMq(instanceId, taskParams.messageId, attempt)
 
           // 云助手就绪需要短暂时间
           await this.sleep(20000)
@@ -261,6 +262,7 @@ export class ECSOrchestrator {
       })
 
       await this.waitForInstanceRunning(instanceId, taskParams.messageId, attempt)
+      await this.ensureInstancePublicEgressForMq(instanceId, taskParams.messageId, attempt)
       const result = await this.waitForTaskCompletion(instanceId, taskParams.messageId, attempt)
       const durationSeconds = (Date.now() - startTime) / 1000
 
@@ -968,6 +970,173 @@ export class ECSOrchestrator {
     }
 
     return statuses[0].status || 'Unknown'
+  }
+
+  /**
+   * DescribeInstances 取单台详情（公网 IP / EIP / 带宽等）。
+   */
+  private async fetchInstanceDescribe(instanceId: string): Promise<any | null> {
+    const request = new $ECS.DescribeInstancesRequest({
+      regionId: this.config.ecs.regionId,
+      instanceIds: JSON.stringify([instanceId]),
+      pageSize: 10,
+    })
+    const runtime = new $Util.RuntimeOptions({})
+    const response = await this.client.describeInstancesWithOptions(request, runtime)
+    const instances = response.body?.instances?.instance || []
+    return instances[0] ?? null
+  }
+
+  /** 是否已有公网 IPv4（公网 IP 列表非空或已绑定 EIP） */
+  private instanceHasPublicEgress(inst: any): boolean {
+    const ips = inst?.publicIpAddress?.ipAddress
+    const list = Array.isArray(ips) ? ips : []
+    if (list.some((ip: unknown) => typeof ip === 'string' && ip.trim().length > 0)) {
+      return true
+    }
+    const eip = inst?.eipAddress?.ipAddress
+    return typeof eip === 'string' && eip.trim().length > 0
+  }
+
+  /**
+   * 池机 / 临时实例启动后：若配置要求公网出口，则检查公网 IP 或 EIP；
+   * 缺失时可选自动调用 ModifyInstanceNetworkSpec / AllocatePublicIpAddress（需账号余额与权限）。
+   */
+  private async ensureInstancePublicEgressForMq(
+    instanceId: string,
+    messageId: string,
+    attempt: number,
+  ): Promise<void> {
+    if (!this.config.ecs.requirePublicIpForTasks) {
+      log.debug('已跳过公网出口检查（WORKER_ECS_REQUIRE_PUBLIC_IP=false）', { instanceId, messageId })
+      return
+    }
+
+    const runtime = new $Util.RuntimeOptions({})
+    let inst = await this.fetchInstanceDescribe(instanceId)
+    if (!inst) {
+      throw new Error(`DescribeInstances 未返回实例 ${instanceId}，无法检查公网 IP`)
+    }
+
+    if (this.instanceHasPublicEgress(inst)) {
+      const pub = inst.publicIpAddress?.ipAddress
+      const eip = inst.eipAddress?.ipAddress
+      log.info('实例已具备公网出口', {
+        instanceId,
+        messageId,
+        attempt,
+        publicIpAddress: Array.isArray(pub) ? pub : pub,
+        eipAddress: eip,
+      })
+      return
+    }
+
+    if (!this.config.ecs.autoAllocatePublicIp) {
+      throw new Error(
+        '实例无公网 IP 且未绑定 EIP，无法访问公网消息队列。请在 ECS 控制台为该实例分配公网带宽并分配公网 IP 或绑定 EIP；' +
+          '或设置 WORKER_ECS_AUTO_ALLOCATE_PUBLIC_IP=true 由编排器自动尝试；若 RabbitMQ 在 VPC 内可设 WORKER_ECS_REQUIRE_PUBLIC_IP=false。',
+      )
+    }
+
+    const bwConfigured = typeof inst.internetMaxBandwidthOut === 'number' ? inst.internetMaxBandwidthOut : 0
+    const targetBw = Math.max(1, this.config.ecs.internetMaxBandwidthOut || 1)
+
+    log.warn('实例无公网出口，尝试自动开通/分配公网 IP', {
+      instanceId,
+      messageId,
+      attempt,
+      internetMaxBandwidthOut: bwConfigured,
+      targetBw,
+    })
+
+    try {
+      if (bwConfigured <= 0) {
+        await this.client.modifyInstanceNetworkSpecWithOptions(
+          new $ECS.ModifyInstanceNetworkSpecRequest({
+            instanceId,
+            internetMaxBandwidthOut: targetBw,
+            networkChargeType: 'PayByTraffic',
+            allocatePublicIp: true,
+            autoPay: true,
+          }),
+          runtime,
+        )
+        log.info('已提交 ModifyInstanceNetworkSpec（公网带宽 + 分配公网 IP）', {
+          instanceId,
+          targetBw,
+        })
+      } else {
+        await this.client.allocatePublicIpAddressWithOptions(
+          new $ECS.AllocatePublicIpAddressRequest({ instanceId }),
+          runtime,
+        )
+        log.info('已调用 AllocatePublicIpAddress', { instanceId })
+      }
+    } catch (error: any) {
+      const code = error?.code || error?.data?.Code
+      const msg = error?.message || String(error)
+      log.warn('首次自动分配公网 IP 失败，将尝试备用策略或轮询', {
+        instanceId,
+        code,
+        message: msg,
+      })
+
+      if (bwConfigured > 0) {
+        try {
+          await this.client.modifyInstanceNetworkSpecWithOptions(
+            new $ECS.ModifyInstanceNetworkSpecRequest({
+              instanceId,
+              internetMaxBandwidthOut: Math.max(bwConfigured, targetBw),
+              networkChargeType: 'PayByTraffic',
+              allocatePublicIp: true,
+              autoPay: true,
+            }),
+            runtime,
+          )
+          log.info('已提交 ModifyInstanceNetworkSpec（allocatePublicIp，备用）', { instanceId })
+        } catch (e2: any) {
+          throw new Error(
+            `自动分配公网 IP 失败: ${e2?.message || e2?.code || e2}。请在控制台检查实例网络或绑定 EIP。原始错误: ${msg}`,
+          )
+        }
+      } else {
+        throw new Error(`开通公网带宽/分配公网 IP 失败: ${msg}（${code || 'no code'}）`)
+      }
+    }
+
+    const ok = await this.pollInstancePublicEgress(instanceId, messageId, 180000)
+    if (!ok) {
+      throw new Error(
+        '等待公网 IP 超时（约 3 分钟）。请在阿里云控制台为该实例确认公网带宽、公网 IP 或 EIP；' +
+          '若 MQ 在 VPC 内网请设置 WORKER_ECS_REQUIRE_PUBLIC_IP=false。',
+      )
+    }
+
+    inst = await this.fetchInstanceDescribe(instanceId)
+    log.info('实例已获得公网出口', {
+      instanceId,
+      messageId,
+      publicIpAddress: inst?.publicIpAddress?.ipAddress,
+      eipAddress: inst?.eipAddress?.ipAddress,
+    })
+  }
+
+  /** 轮询 DescribeInstances，直到出现公网 IP 或 EIP */
+  private async pollInstancePublicEgress(
+    instanceId: string,
+    messageId: string,
+    maxWaitMs: number,
+  ): Promise<boolean> {
+    const deadline = Date.now() + maxWaitMs
+    while (Date.now() < deadline) {
+      await this.sleep(4000)
+      const inst = await this.fetchInstanceDescribe(instanceId)
+      if (inst && this.instanceHasPublicEgress(inst)) {
+        return true
+      }
+      log.debug('等待公网 IP 生效…', { instanceId, messageId })
+    }
+    return false
   }
 
   /**

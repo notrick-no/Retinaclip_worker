@@ -68,8 +68,21 @@ export interface WorkerConfig {
     spotStrategy: 'SpotAsPriceGo' | 'SpotWithPriceLimit'
     /** 抢占式实例价格上限（仅 SpotWithPriceLimit 时有效） */
     spotPriceLimit?: number
-    /** 实例公网带宽 (Mbps)，0 表示不分配公网 IP */
+    /**
+     * 实例公网带宽 (Mbps)。RunInstances 新建实例时使用；0 表示创建时不配公网带宽。
+     * 池机若此前为 0，可在 `WORKER_ECS_AUTO_ALLOCATE_PUBLIC_IP=true` 时由编排器尝试升带宽并分配公网 IP。
+     */
     internetMaxBandwidthOut: number
+    /**
+     * 实例进入 Running 后是否要求具备公网出口（公网 IP 或已绑定 EIP），便于访问公网 RabbitMQ。
+     * 若 MQ 在 VPC 内网，可设 `WORKER_ECS_REQUIRE_PUBLIC_IP=false`。
+     */
+    requirePublicIpForTasks: boolean
+    /**
+     * 在 requirePublicIpForTasks 为 true 且当前无公网 IP/EIP 时，是否调用阿里云 API 尝试修复：
+     * 带宽为 0 时 `ModifyInstanceNetworkSpec`（按流量计费 + 分配公网 IP），否则先 `AllocatePublicIpAddress`。
+     */
+    autoAllocatePublicIp: boolean
     /** 任务处理超时时间 (ms)，超时将释放实例 */
     taskTimeout: number
     /** 实例启动等待超时 (ms) */
@@ -302,6 +315,8 @@ export function loadConfig(): WorkerConfig {
       spotStrategy,
       spotPriceLimit,
       internetMaxBandwidthOut: parseIntEnv('ALIYUN_ECS_BANDWIDTH_OUT', 100, { min: 0 }),
+      requirePublicIpForTasks: parseBoolEnv('WORKER_ECS_REQUIRE_PUBLIC_IP', true),
+      autoAllocatePublicIp: parseBoolEnv('WORKER_ECS_AUTO_ALLOCATE_PUBLIC_IP', true),
       taskTimeout: parseIntEnv('WORKER_TASK_TIMEOUT', 30 * 60 * 1000, { min: 1000 }), // 30 分钟
       instanceStartTimeout: parseIntEnv('WORKER_INSTANCE_START_TIMEOUT', 5 * 60 * 1000, { min: 1000 }), // 5 分钟
       pollInterval: parseIntEnv('WORKER_POLL_INTERVAL', 10000, { min: 1000 }), // 10 秒

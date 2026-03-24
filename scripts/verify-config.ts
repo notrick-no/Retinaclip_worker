@@ -37,6 +37,8 @@ function main() {
   console.log('  vswitch        ', cfg.ecs.vswitchId)
   console.log('  namePrefix     ', cfg.ecs.instanceNamePrefix)
   console.log('  maxInstances   ', cfg.ecs.maxInstances)
+  console.log('  requirePubIp   ', cfg.ecs.requirePublicIpForTasks)
+  console.log('  autoAllocPubIp ', cfg.ecs.autoAllocatePublicIp)
   console.log('  spot           ', cfg.ecs.useSpotInstance, cfg.ecs.spotStrategy)
   console.log('  poolEnabled    ', cfg.ecs.poolEnabled)
   console.log('  poolLifecycle  ', cfg.ecs.poolLifecycleTagValue)
