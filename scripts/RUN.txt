@@ -1,0 +1,53 @@
+# RetinaClip worker 仓库：如何运行（当前工作区）
+
+## 1. 派欧云 PPIO 调度器（本仓库 ppio/）
+
+1. 复制 `env_example` 为 `.env` 并填写 PPIO、RabbitMQ 等（见 `env_example` 末尾 PPIO 段）
+2. 安装依赖: `bash scripts/ppio-install.sh` 或 `python -m pip install -r ppio/requirements.txt`（在已 `conda activate` 的环境里用 `python` 更稳妥）
+3. 查 GPU 产品 ID: `bash scripts/ppio-list-products.sh`，将 `id` 写入 `PPIO_PRODUCT_ID`
+4. 检查变量: `bash scripts/check-ppio-env.sh`
+5. 启动: `bash scripts/ppio-scheduler.sh`（或 `python -m ppio` 且在仓库根目录、已设 PYTHONPATH/环境变量）
+
+说明：`.env` 会由 `scripts/lib/common.sh` 在运行上述脚本时自动 `source`（与 bash 语法兼容的 export 行）。
+
+### 仅启停已有 PPIO 实例（不 create）
+
+1. 在派欧云控制台先创建好实例，把实例 ID 写入 `PPIO_MANAGED_INSTANCE_ID=`
+2. 可不填 `PPIO_PRODUCT_ID`
+3. 有队列时调 **启动** API，无队列时 **停止**（`PPIO_IDLE_ACTION` 在仅启停模式下为 `stop`）
+
+### 管理 API（给另一项目「后台」调状态与按钮）
+
+1. 设置 `PPIO_ADMIN_TOKEN=长随机串`，可选 `PPIO_ADMIN_LISTEN_HOST=0.0.0.0` 以便内网其它机器访问
+2. 启动调度器后：
+
+```bash
+curl -sS -H "Authorization: Bearer $PPIO_ADMIN_TOKEN" http://127.0.0.1:9843/api/v1/status
+curl -sS -X POST -H "Authorization: Bearer $PPIO_ADMIN_TOKEN" http://127.0.0.1:9843/api/v1/instance/start
+curl -sS -X POST -H "Authorization: Bearer $PPIO_ADMIN_TOKEN" http://127.0.0.1:9843/api/v1/instance/stop
+```
+
+响应 JSON 含 `queue`、`ppio`（实例详情）、`last_error`。后台可轮询 `status`、把错误展示给管理员。若暂时不要让队列自动起停，可设 `PPIO_QUEUE_AUTOMATION=false`。
+
+## 2. 本地消费 RabbitMQ（与 dev 一致）
+
+先装依赖: `bash scripts/dev-install-mq-deps.sh`（或 `python -m pip install -r dev/requirements.txt`）
+
+`bash scripts/dev-message-queue-worker.sh`  
+会运行 `dev/message_queue_worker.py`；`BACKEND_URL`、`RABBITMQ_URL` 等可放在 `.env`
+
+## 3. npm 脚本
+
+若已 `npm install`，可：
+
+- `npm run ppio:install` — 安装 ppio Python 依赖
+- `npm run ppio:check-env` — 检查 PPIO 环境变量
+- `npm run ppio:products` — 列出 GPU 产品
+- `npm run ppio:scheduler` — 启动 PPIO 调度器
+- `npm run dev:mq-worker` — 本地 message queue worker
+
+`npm start` 依赖 `aliyun/` 下 ECS Worker；若当前工作区无该目录，会报错。请用上述 PPIO 脚本或从主分支恢复 `aliyun/**`。
+
+## 4. 其它
+
+主仓库若包含 `scripts/verify-config.ts` 等，可使用 `npm run test:smoke`；当前精简工作区可能无这些文件。

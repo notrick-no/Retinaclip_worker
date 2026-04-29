@@ -15,7 +15,12 @@
     "test:pool": "npm run pool",
     "test:ecs-pool": "npm run pool",
     "test:smoke": "npm run test:config && npm run test:rabbitmq && npm run test:ecs",
-    "test:all": "npm run test:config && npm run test:unit && npm run test:smoke && npm run pool"
+    "dev:mq-install": "bash scripts/dev-install-mq-deps.sh",
+    "dev:mq-worker": "bash scripts/dev-message-queue-worker.sh",
+    "ppio:install": "bash scripts/ppio-install.sh",
+    "ppio:check-env": "bash scripts/check-ppio-env.sh",
+    "ppio:products": "bash scripts/ppio-list-products.sh",
+    "ppio:scheduler": "bash scripts/ppio-scheduler.sh"
   },
   "dependencies": {
     "amqplib": "^0.10.9",

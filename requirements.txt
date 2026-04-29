@@ -1,0 +1,2 @@
+# Railway / 通用部署：Nixpacks 默认读取仓库根目录本文件
+-r ppio/requirements.txt

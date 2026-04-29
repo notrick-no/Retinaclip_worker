@@ -1,0 +1,6 @@
+# https://docs.railway.com/reference/config-as-code
+[build]
+builder = "nixpacks"
+
+[deploy]
+startCommand = "PYTHONPATH=. python -m ppio"
