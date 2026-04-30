@@ -3,4 +3,4 @@
 builder = "nixpacks"
 
 [deploy]
-startCommand = "PYTHONPATH=. python -m ppio"
+startCommand = "PYTHONPATH=. python3 -m ppio"
