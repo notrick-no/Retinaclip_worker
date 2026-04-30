@@ -1,0 +1,3 @@
+# 根目录有 package.json 时 Nixpacks 会选 Node，镜像里没有 Python。
+# Railway 上本服务只跑 PPIO 调度器，固定走 Python provider。
+providers = ["python"]
