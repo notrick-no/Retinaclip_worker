@@ -29,8 +29,9 @@ class ManagedInstance:
 
 class PPIOScheduler:
     """
-    模式 A：PPIO_MANAGED_INSTANCE_ID 有值 — 仅对已有实例 start/stop，不创建/删除。
-    模式 B：无该变量 — 与旧版一致，按队列 create + delete/stop。
+    模式 A：PPIO_MANAGED_INSTANCE_ID 有值 — 仅对已有实例 start/stop，不创建/删除；
+           多个 ID 用逗号分隔时按顺序 start 直到成功，空队列时对全部 stop。
+    模式 B：无托管 ID — 按队列 create + delete/stop；PPIO_PRODUCT_ID 多个时依次尝试创建。
     """
 
     def __init__(self, cfg: PPIOSchedulerConfig) -> None:
@@ -53,8 +54,7 @@ class PPIOScheduler:
         self._last_error: Optional[str] = None
         self._last_error_at: Optional[float] = None
         self._last_queue_stats: Optional[Dict[str, int]] = None
-        if cfg.managed_instance_id:
-            mid = cfg.managed_instance_id
+        for mid in cfg.managed_instance_ids:
             self.managed[mid] = ManagedInstance(instance_id=mid, name="(managed)")
 
     def _record_error(self, msg: str) -> None:
@@ -75,7 +75,7 @@ class PPIOScheduler:
         return (time.time() - self._ready_empty_since) * 1000 >= need
 
     def _is_managed_mode(self) -> bool:
-        return bool(self.cfg.managed_instance_id)
+        return bool(self.cfg.managed_instance_ids)
 
     def _merge_remote_instances(self) -> None:
         if self._is_managed_mode():
@@ -122,51 +122,72 @@ class PPIOScheduler:
         return out[:100]
 
     def _create_one(self) -> Optional[str]:
-        if not (self.cfg.ppio_product_id or "").strip():
+        product_ids = [x for x in self.cfg.ppio_product_ids if (x or "").strip()]
+        if not product_ids:
             self._record_error("创建实例需要 PPIO_PRODUCT_ID")
             return None
-        self._counter += 1
-        name = f"{self.cfg.ppio_instance_name_prefix}{int(time.time())}-{self._counter}-{uuid.uuid4().hex[:6]}"
-        body: Dict[str, Any] = {
-            "name": name,
-            "productId": self.cfg.ppio_product_id,
-            "gpuNum": self.cfg.ppio_gpu_num,
-            "rootfsSize": self.cfg.ppio_rootfs_size,
-            "imageUrl": self.cfg.ppio_image_url,
-            "kind": self.cfg.ppio_kind,
-            "month": self.cfg.ppio_month,
-            "command": self.cfg.ppio_create_command,
-            "envs": self._build_envs(),
-            "billingMethod": self.cfg.ppio_billing,
-        }
-        if self.cfg.ppio_create_entrypoint:
-            body["entrypoint"] = self.cfg.ppio_create_entrypoint
-        if self.cfg.ppio_cluster_id:
-            body["clusterId"] = self.cfg.ppio_cluster_id
-        if self.cfg.ppio_image_auth:
-            body["imageAuth"] = self.cfg.ppio_image_auth
-        if self.cfg.ppio_image_auth_id:
-            body["imageAuthId"] = self.cfg.ppio_image_auth_id
-        if self.cfg.ppio_ports:
-            body["ports"] = self.cfg.ppio_ports
-        if self.cfg.ppio_min_cuda:
-            body["minCuda"] = self.cfg.ppio_min_cuda
+        last_err: Optional[str] = None
+        for product_id in product_ids:
+            self._counter += 1
+            name = f"{self.cfg.ppio_instance_name_prefix}{int(time.time())}-{self._counter}-{uuid.uuid4().hex[:6]}"
+            body: Dict[str, Any] = {
+                "name": name,
+                "productId": product_id,
+                "gpuNum": self.cfg.ppio_gpu_num,
+                "rootfsSize": self.cfg.ppio_rootfs_size,
+                "imageUrl": self.cfg.ppio_image_url,
+                "kind": self.cfg.ppio_kind,
+                "month": self.cfg.ppio_month,
+                "command": self.cfg.ppio_create_command,
+                "envs": self._build_envs(),
+                "billingMethod": self.cfg.ppio_billing,
+            }
+            if self.cfg.ppio_create_entrypoint:
+                body["entrypoint"] = self.cfg.ppio_create_entrypoint
+            if self.cfg.ppio_cluster_id:
+                body["clusterId"] = self.cfg.ppio_cluster_id
+            if self.cfg.ppio_image_auth:
+                body["imageAuth"] = self.cfg.ppio_image_auth
+            if self.cfg.ppio_image_auth_id:
+                body["imageAuthId"] = self.cfg.ppio_image_auth_id
+            if self.cfg.ppio_ports:
+                body["ports"] = self.cfg.ppio_ports
+            if self.cfg.ppio_min_cuda:
+                body["minCuda"] = self.cfg.ppio_min_cuda
 
-        logger.info("创建 PPIO 实例: name=%s product=%s", name, self.cfg.ppio_product_id)
-        res = self.client.create_gpu_instance(body)
-        iid = str(
-            res.get("id")
-            or res.get("instanceId")
-            or res.get("InstanceId")
-            or (res.get("data") or {}).get("id")
-            or ""
+            logger.info("创建 PPIO 实例: name=%s product=%s", name, product_id)
+            try:
+                res = self.client.create_gpu_instance(body)
+            except requests.HTTPError as e:
+                body_txt = ""
+                if e.response is not None:
+                    body_txt = (e.response.text or "")[:500]
+                last_err = f"product={product_id}: {e} {body_txt}"
+                logger.warning("创建失败，尝试下一规格: %s", last_err[:400])
+                continue
+            except Exception as e:  # noqa: BLE001
+                self._record_error(f"创建实例异常 product={product_id}: {e}")
+                return None
+
+            iid = str(
+                res.get("id")
+                or res.get("instanceId")
+                or res.get("InstanceId")
+                or (res.get("data") or {}).get("id")
+                or ""
+            )
+            if not iid:
+                last_err = f"创建后无实例 ID product={product_id}: {res!r}"
+                logger.warning("%s，尝试下一规格", last_err[:400])
+                continue
+            self.managed[iid] = ManagedInstance(instance_id=iid, name=name)
+            self._clear_error()
+            return iid
+
+        self._record_error(
+            f"所有 PPIO_PRODUCT_ID 均创建失败；最后: {last_err or 'unknown'}"
         )
-        if not iid:
-            self._record_error(f"创建实例后未得到 ID: {res!r}")
-            return None
-        self.managed[iid] = ManagedInstance(instance_id=iid, name=name)
-        self._clear_error()
-        return iid
+        return None
 
     # 表示「实例已在目标状态、本次操作可忽略」的关键词
     _START_IDEMPOTENT_HINTS = (
@@ -297,12 +318,13 @@ class PPIOScheduler:
                 return
 
             if self._is_managed_mode():
-                iid = self.cfg.managed_instance_id
-                assert iid is not None
                 if st.message_count > 0:
-                    self._safe_start(iid)
+                    for iid in self.cfg.managed_instance_ids:
+                        if self._safe_start(iid):
+                            break
                 elif self._queue_empty_long_enough():
-                    self._safe_stop(iid)
+                    for iid in self.cfg.managed_instance_ids:
+                        self._safe_stop(iid)
             else:
                 self._merge_remote_instances()
                 if st.message_count > 0:
@@ -325,13 +347,13 @@ class PPIOScheduler:
             st.message_count,
             st.consumer_count,
             len(self.managed),
-            bool(self.cfg.managed_instance_id),
+            bool(self.cfg.managed_instance_ids),
             self.cfg.queue_automation,
         )
 
     def ppio_instance_id_for_api(self) -> str:
-        if self.cfg.managed_instance_id:
-            return self.cfg.managed_instance_id
+        if self.cfg.managed_instance_ids:
+            return self.cfg.managed_instance_ids[0]
         if self.managed:
             return next(iter(self.managed.keys()))
         return ""
@@ -341,7 +363,7 @@ class PPIOScheduler:
         if self._last_queue_stats is not None:
             q = dict(self._last_queue_stats)
         ppio_detail: Any = None
-        iid = self.ppio_instance_id_for_api() or self.cfg.managed_instance_id
+        iid = self.ppio_instance_id_for_api()
         idle_info: Dict[str, Any]
         with self._op_lock:
             if iid:
@@ -368,7 +390,7 @@ class PPIOScheduler:
                 "message": self._last_error,
                 "at": self._last_error_at,
             }
-        return {
+        snap: Dict[str, Any] = {
             "mode": "managed_start_stop" if self._is_managed_mode() else "create_release",
             "instance_id": iid or None,
             "queue": q,
@@ -377,20 +399,28 @@ class PPIOScheduler:
             "last_error": err,
             "queue_automation": self.cfg.queue_automation,
         }
+        if self._is_managed_mode():
+            snap["managed_instance_ids"] = list(self.cfg.managed_instance_ids)
+        else:
+            snap["ppio_product_ids"] = list(self.cfg.ppio_product_ids)
+        return snap
 
     def api_start(self) -> Dict[str, Any]:
         with self._op_lock:
             if self._is_managed_mode():
-                iid = self.cfg.managed_instance_id
-                if not iid:
+                if not self.cfg.managed_instance_ids:
                     return {"ok": False, "error": "无实例 ID"}
-                self._safe_start(iid)
+                started: Optional[str] = None
+                for iid in self.cfg.managed_instance_ids:
+                    if self._safe_start(iid):
+                        started = iid
+                        break
                 return {
-                    "ok": not self._last_error,
-                    "instance_id": iid,
+                    "ok": started is not None,
+                    "instance_id": started,
                     "last_error": self._last_error,
                 }
-            if not (self.cfg.ppio_product_id or "").strip():
+            if not [x for x in self.cfg.ppio_product_ids if (x or "").strip()]:
                 return {
                     "ok": False,
                     "error": "无 PPIO_MANAGED_INSTANCE_ID 时须配置 PPIO_PRODUCT_ID",
@@ -409,13 +439,15 @@ class PPIOScheduler:
     def api_stop(self) -> Dict[str, Any]:
         with self._op_lock:
             if self._is_managed_mode():
-                iid = self.cfg.managed_instance_id
-                if not iid:
+                if not self.cfg.managed_instance_ids:
                     return {"ok": False, "error": "无实例 ID"}
-                self._safe_stop(iid)
+                ok_all = True
+                for iid in self.cfg.managed_instance_ids:
+                    if not self._safe_stop(iid):
+                        ok_all = False
                 return {
-                    "ok": not self._last_error,
-                    "instance_id": iid,
+                    "ok": ok_all,
+                    "instance_id": self.cfg.managed_instance_ids[0],
                     "last_error": self._last_error,
                 }
             for xid in list(self.managed.keys()):

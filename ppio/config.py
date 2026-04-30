@@ -9,9 +9,10 @@ from typing import List, Optional
 class PPIOSchedulerConfig:
     ppio_api_key: str
     ppio_base_url: str
-    ppio_product_id: str
-    """若设置，只对该实例调 PPIO 启动/停止，不创建、不删实例。"""
-    managed_instance_id: Optional[str]
+    """按队列 create 时依次尝试；逗号分隔多个 productId，前一个失败（如库存不足）则试下一个。"""
+    ppio_product_ids: List[str]
+    """非空时为托管模式：依次对这些实例 start/stop，不 create/delete。多个 ID 用逗号分隔，有任务时按顺序 start 直到成功；空队列时全部 stop。"""
+    managed_instance_ids: List[str]
     ppio_cluster_id: Optional[str]
     ppio_gpu_num: int
     ppio_rootfs_size: int
@@ -58,6 +59,18 @@ def _i(name: str, default: int) -> int:
     if raw is None or str(raw).strip() == "":
         return default
     return int(str(raw).strip(), 10)
+
+
+def _parse_csv_ids(raw: str) -> List[str]:
+    """逗号/分号分隔的 ID 或 productId 列表，去空、去首尾空格。"""
+    if not (raw or "").strip():
+        return []
+    out: List[str] = []
+    for chunk in raw.replace(";", ",").split(","):
+        s = chunk.strip()
+        if s:
+            out.append(s)
+    return out
 
 
 def _parse_env_list(raw: str) -> List[tuple[str, str]]:
@@ -108,11 +121,12 @@ def load_config() -> PPIOSchedulerConfig:
     if not ppio_key:
         raise ValueError("请设置 PPIO_API_KEY 或 PPINFRA_API_KEY")
 
-    managed = _b("PPIO_MANAGED_INSTANCE_ID") or None
-    product = _b("PPIO_PRODUCT_ID")
-    if not managed and not product:
+    managed_ids = _parse_csv_ids(_b("PPIO_MANAGED_INSTANCE_ID"))
+    product_ids = _parse_csv_ids(_b("PPIO_PRODUCT_ID"))
+    if not managed_ids and not product_ids:
         raise ValueError(
-            "请设置 PPIO_MANAGED_INSTANCE_ID（仅启停已有实例）或 PPIO_PRODUCT_ID（创建新实例）"
+            "请设置 PPIO_MANAGED_INSTANCE_ID（仅启停已有实例）或 PPIO_PRODUCT_ID（创建新实例）；"
+            "多个备用值可用英文逗号分隔"
         )
 
     rmq = _b("RABBITMQ_URL")
@@ -132,12 +146,12 @@ def load_config() -> PPIOSchedulerConfig:
         or "media.uploaded"
     )
 
-    if managed:
+    if managed_ids:
         default_idle = "stop"
     else:
         default_idle = "delete"
     raw_idle = (_b("PPIO_IDLE_ACTION") or default_idle).lower() or default_idle
-    if managed and raw_idle == "delete":
+    if managed_ids and raw_idle == "delete":
         raw_idle = "stop"
 
     admin_tok = _b("PPIO_ADMIN_TOKEN") or None
@@ -145,8 +159,8 @@ def load_config() -> PPIOSchedulerConfig:
     return PPIOSchedulerConfig(
         ppio_api_key=ppio_key,
         ppio_base_url=_b("PPIO_BASE_URL", "https://api.ppinfra.com").rstrip("/"),
-        ppio_product_id=product,
-        managed_instance_id=managed,
+        ppio_product_ids=product_ids,
+        managed_instance_ids=managed_ids,
         ppio_cluster_id=_b("PPIO_CLUSTER_ID") or None,
         ppio_gpu_num=_i("PPIO_GPU_NUM", 1),
         ppio_rootfs_size=_i("PPIO_ROOTFS_GB", 50),

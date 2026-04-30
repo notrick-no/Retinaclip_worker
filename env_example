@@ -15,9 +15,9 @@ PPIO_API_KEY=
 PPIO_BASE_URL=https://api.ppinfra.com
 
 # 二选一（或同时存在时优先「仅启停」）：
-# A) 只启停控制台/历史已创建的实例（不 create、不 delete）
+# A) 只启停控制台/历史已创建的实例（不 create、不 delete）；多个备用实例用英文逗号分隔，前者 start 失败则试后者
 PPIO_MANAGED_INSTANCE_ID=
-# B) 无固定实例时，按队列 create 新实例需填写：
+# B) 无固定实例时，按队列 create 新实例需填写；多个 productId 逗号分隔，创建失败则试下一规格
 PPIO_PRODUCT_ID=
 
 # PPIO_CLUSTER_ID=
