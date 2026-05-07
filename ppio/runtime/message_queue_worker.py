@@ -9,7 +9,6 @@ from pathlib import Path
 import time
 import sys
 import re
-import threading
 import uuid
 import hmac
 import hashlib
@@ -755,11 +754,12 @@ class VideoQueueWorker:
                 )
                 self.send_webhook_notification(webhook_url, payload, event_type="failed")
 
-            monitor_thread = threading.Thread(target=monitor_processing, daemon=True)
-            monitor_thread.start()
+            # 同步等待处理到终态后再 ack，避免“任务仍在跑但队列已空”导致调度器误停机。
+            # 注意：pika channel 非线程安全，因此不要在后台线程里 ack。
+            monitor_processing()
 
             ch.basic_ack(delivery_tag=method.delivery_tag)
-            logger.info("✅  消息处理完成")
+            logger.info("✅  任务已到终态，消息已 ack")
 
         except Exception as e:
             logger.error("❌  处理消息时发生错误: %s", e)

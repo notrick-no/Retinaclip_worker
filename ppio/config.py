@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from typing import List, Optional
+from urllib.parse import unquote, urlparse
 
 
 @dataclass
@@ -30,10 +31,16 @@ class PPIOSchedulerConfig:
     ppio_min_cuda: Optional[str]
     rabbitmq_url: str
     rabbitmq_queue: str
+    # rabbitmq_management_url 非空时拉取未 ack 数，停机需 ready 与在途均为 0
+    rabbitmq_management_url: Optional[str]
+    rabbitmq_management_vhost: str
     poll_interval_ms: int
     # idle_close_ms=0 时，scheduler 用 idle_min_grace_ms 作为「ready 为空」后的最短等待再关机
     idle_close_ms: int
     idle_min_grace_ms: int
+    # 即使队列已空且满足 idle_close，也至少距离「最后一次观测到队列非空」这么久才允许缩容。
+    # 用于覆盖长任务（尤其是 worker 早 ack 导致 ready/unack 很快归零）的误停机。
+    min_work_window_ms: int
     idle_action: str
     log_tail_lines: int
     log_fetch_interval_s: int
@@ -59,6 +66,20 @@ def _i(name: str, default: int) -> int:
     if raw is None or str(raw).strip() == "":
         return default
     return int(str(raw).strip(), 10)
+
+
+def _amqp_vhost_from_url(amqp_url: str) -> str:
+    """从 amqp(s)://host:port/vhost 解析 vhost，无路径时为 /。"""
+    if not (amqp_url or "").strip():
+        return "/"
+    try:
+        p = urlparse(amqp_url)
+        path = (p.path or "").strip("/")
+        if not path:
+            return "/"
+        return unquote(path) or "/"
+    except Exception:  # noqa: BLE001
+        return "/"
 
 
 def _parse_csv_ids(raw: str) -> List[str]:
@@ -146,6 +167,13 @@ def load_config() -> PPIOSchedulerConfig:
         or "media.uploaded"
     )
 
+    mgmt_url = (_b("RABBITMQ_MANAGEMENT_URL") or None)
+    if mgmt_url:
+        mgmt_url = mgmt_url.rstrip("/")
+    mgmt_vhost = _b("RABBITMQ_MANAGEMENT_VHOST")
+    if not mgmt_vhost:
+        mgmt_vhost = _amqp_vhost_from_url(rmq)
+
     if managed_ids:
         default_idle = "stop"
     else:
@@ -178,6 +206,8 @@ def load_config() -> PPIOSchedulerConfig:
         ppio_min_cuda=_b("PPIO_MIN_CUDA") or None,
         rabbitmq_url=rmq,
         rabbitmq_queue=queue,
+        rabbitmq_management_url=mgmt_url,
+        rabbitmq_management_vhost=mgmt_vhost,
         poll_interval_ms=max(1000, _i("PPIO_SCHEDULER_POLL_INTERVAL_MS", 15000)),
         idle_close_ms=max(
             0,
@@ -188,6 +218,14 @@ def load_config() -> PPIOSchedulerConfig:
             ),
         ),
         idle_min_grace_ms=max(0, _i("PPIO_IDLE_MIN_GRACE_MS", 120000)),
+        min_work_window_ms=max(
+            0,
+            _i(
+                "PPIO_MIN_WORK_WINDOW_MS",
+                # 默认 15min：避免「最后一个任务很长」且队列提前变空时误停机
+                900000,
+            ),
+        ),
         idle_action=raw_idle,
         log_tail_lines=max(1, min(2000, _i("PPIO_LOG_TAIL", 200))),
         log_fetch_interval_s=max(5, _i("PPIO_LOG_FETCH_INTERVAL_S", 30)),

@@ -24,13 +24,24 @@ PPIO_PRODUCT_ID=
 # PPIO_QUEUE_AUTOMATION=true
 # 仅启停模式下列 create 相关可省略；自动 idle 时默认 stop，不会 delete
 # PPIO_IDLE_ACTION=stop
-# —— 空闲关机宽限（避免「队列 ready 已空但 worker 仍在处理未 ack 消息」时误停 GPU）——
-# RabbitMQ passive 的 message_count 只统计待投递条数，不含已投递未 ack。
-# 未设置时默认：PPIO_IDLE_CLOSE_MS 等效 300000（5min）；也可用 PPIO_SCALE_DOWN_IDLE_MS。
+# —— 空闲关机宽限 ——
+# 「无任务」判定：若配置了 RABBITMQ_MANAGEMENT_URL，则须 message_count 与 messages_unacknowledged 均为 0；
+# 未配置 Management 时仅看 message_count（已取走但未 ack 的在途任务可能仍跑，易误停，建议云上开 Management 插件并填 URL）。
+# RABBITMQ_MANAGEMENT_URL=http://guest:guest@127.0.0.1:15672
+# 与 AMQP vhost 不一致时显式写（默认从 RABBITMQ_URL 路径解析）：
+# RABBITMQ_MANAGEMENT_VHOST=/
+# 队列持续「无任务」达到下列毫秒后才 stop/delete 实例（例：10 分钟）：
 # PPIO_IDLE_CLOSE_MS=600000
+# 未设置时默认：PPIO_IDLE_CLOSE_MS 等效 300000（5min）；也可用 PPIO_SCALE_DOWN_IDLE_MS。
 # PPIO_SCALE_DOWN_IDLE_MS=
 # 若显式设为 PPIO_IDLE_CLOSE_MS=0，则用 PPIO_IDLE_MIN_GRACE_MS（默认 120000=2min）作为最短等待。
 # PPIO_IDLE_MIN_GRACE_MS=120000
+#
+# —— 长任务保护（强烈建议开启）——
+# 即使队列已空且满足 idle_close，也至少距离「最后一次观测到队列非空」这么久才 stop/delete。
+# 这能覆盖「最后一个任务 > idle_close」以及 worker 早 ack 导致队列很快变空的误停机。
+# 例：15 分钟（默认值就是 15min）；如你的视频任务可能 30min，就填 1800000。
+# PPIO_MIN_WORK_WINDOW_MS=900000
 
 # PPIO_PRODUCTS_API_PATH=/gpu-instance/openapi/v1/products
 # 若控制台/文档与默认不一致，可显式指定（见 ppio/client.py 中的尝试顺序）：

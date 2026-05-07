@@ -14,7 +14,7 @@ import requests
 
 from ppio.client import PPIOClient
 from ppio.config import PPIOSchedulerConfig, load_config
-from ppio.queue_monitor import QueueDepthMonitor
+from ppio.queue_monitor import QueueDepthMonitor, queue_has_pending_work
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +25,7 @@ class ManagedInstance:
     name: str
     created_at: float = field(default_factory=time.time)
     last_log_at: float = 0.0
+    last_started_at: Optional[float] = None
 
 
 class PPIOScheduler:
@@ -43,7 +44,12 @@ class PPIOScheduler:
             instance_detail_path=cfg.instance_detail_path,
             cluster_id=cfg.ppio_cluster_id,
         )
-        self.queue = QueueDepthMonitor(cfg.rabbitmq_url, cfg.rabbitmq_queue)
+        self.queue = QueueDepthMonitor(
+            cfg.rabbitmq_url,
+            cfg.rabbitmq_queue,
+            management_url=cfg.rabbitmq_management_url,
+            management_vhost=cfg.rabbitmq_management_vhost,
+        )
         self.managed: Dict[str, ManagedInstance] = {}
         # last_non_empty_at：最后一次观测到 message_count>0 的时间；_ready_empty_since：首次观测到 ready=0 的时间
         self.last_non_empty_at = 0.0
@@ -73,6 +79,19 @@ class PPIOScheduler:
         if need <= 0:
             need = self.cfg.idle_min_grace_ms
         return (time.time() - self._ready_empty_since) * 1000 >= need
+
+    def _work_window_elapsed(self) -> bool:
+        """
+        缩容额外保护窗口：即便队列已空且满足 idle_close，也至少距离「最后一次观测到队列非空」
+        达到 min_work_window_ms 才允许 stop/delete。
+        """
+        need = self.cfg.min_work_window_ms
+        if need <= 0:
+            return True
+        # last_non_empty_at 只有在观测到 pending work 时更新；若从未观测到，则不阻塞缩容。
+        if self.last_non_empty_at <= 0:
+            return True
+        return (time.time() - self.last_non_empty_at) * 1000 >= need
 
     def _is_managed_mode(self) -> bool:
         return bool(self.cfg.managed_instance_ids)
@@ -203,6 +222,8 @@ class PPIOScheduler:
         try:
             self.client.start_instance(iid)
             self._clear_error()
+            if iid in self.managed:
+                self.managed[iid].last_started_at = time.time()
             return True
         except requests.HTTPError as e:
             body = ""
@@ -212,6 +233,9 @@ class PPIOScheduler:
                 if any(x in body.lower() for x in self._START_IDEMPOTENT_HINTS):
                     logger.info("start_instance(%s) 可忽略: %s", iid, body[:200])
                     self._clear_error()
+                    if iid in self.managed and self.managed[iid].last_started_at is None:
+                        # 已在 running/starting 时也记录一次，作为缩容保活参考
+                        self.managed[iid].last_started_at = time.time()
                     return True
             self._record_error(f"start_instance {iid}: {e} {body}")
             return False
@@ -254,6 +278,19 @@ class PPIOScheduler:
     def _release_instance(
         self, instance_id: str, *, reason: str = "idle"
     ) -> None:
+        # 避免长任务/早 ack 导致「队列空」但实例仍在处理时被误停：
+        # 以“最后一次观测到队列非空”的时间窗口做保护（与实例运行多久无关）。
+        if self.cfg.min_work_window_ms > 0 and self.last_non_empty_at > 0:
+            since = (time.time() - self.last_non_empty_at) * 1000
+            if since < self.cfg.min_work_window_ms:
+                logger.info(
+                    "实例 %s 保活(min_work_window=%sms since_non_empty=%sms)，跳过释放；reason=%s",
+                    instance_id,
+                    self.cfg.min_work_window_ms,
+                    int(since),
+                    reason,
+                )
+                return
         try:
             if self._is_managed_mode():
                 self._safe_stop(instance_id)
@@ -303,8 +340,9 @@ class PPIOScheduler:
         self._last_queue_stats = {
             "message_count": st.message_count,
             "consumer_count": st.consumer_count,
+            "messages_unacknowledged": st.messages_unacknowledged,
         }
-        if st.message_count > 0:
+        if queue_has_pending_work(st):
             self.last_non_empty_at = time.time()
             self._ready_empty_since = None
         else:
@@ -318,16 +356,16 @@ class PPIOScheduler:
                 return
 
             if self._is_managed_mode():
-                if st.message_count > 0:
+                if queue_has_pending_work(st):
                     for iid in self.cfg.managed_instance_ids:
                         if self._safe_start(iid):
                             break
-                elif self._queue_empty_long_enough():
+                elif self._queue_empty_long_enough() and self._work_window_elapsed():
                     for iid in self.cfg.managed_instance_ids:
                         self._safe_stop(iid)
             else:
                 self._merge_remote_instances()
-                if st.message_count > 0:
+                if queue_has_pending_work(st):
                     if len(self.managed) == 0:
                         try:
                             self._create_one()
@@ -343,8 +381,9 @@ class PPIOScheduler:
                 self._emit_logs()
 
         logger.info(
-            "队列: messages=%s consumers=%s 实例数=%s managed=%s automation=%s",
+            "队列: messages=%s unack=%s consumers=%s 实例数=%s managed=%s automation=%s",
             st.message_count,
+            st.messages_unacknowledged,
             st.consumer_count,
             len(self.managed),
             bool(self.cfg.managed_instance_ids),
